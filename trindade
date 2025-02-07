@@ -1,0 +1,50 @@
+#!/usr/bin/env php
+<?php
+
+require __DIR__ . '/vendor/autoload.php';
+
+$commands = [
+    new Trindade\Console\Commands\InitCommand(),
+    new Trindade\Console\Commands\MakeControllerCommand(),
+    new Trindade\Console\Commands\PluginCommand(),
+    // Add more commands here
+];
+
+$args = array_slice($argv, 1);
+
+if (empty($args) || in_array('--help', $args) || in_array('-h', $args)) {
+    echo "Trindade Framework CLI\n\n";
+    echo "Usage: ./trindade [command] [arguments]\n\n";
+    echo "Available commands:\n";
+    
+    foreach ($commands as $command) {
+        echo sprintf("  %s\t%s\n", $command->getName(), $command->getDescription());
+        
+        foreach ($command->getArguments() as $arg => $desc) {
+            echo sprintf("    %s\t%s\n", $arg, $desc);
+        }
+        
+        if ($command->getOptions()) {
+            echo "    Options:\n";
+            foreach ($command->getOptions() as $opt => $desc) {
+                echo sprintf("      %s\t%s\n", $opt, $desc);
+            }
+        }
+        
+        echo "\n";
+    }
+    
+    exit(0);
+}
+
+$commandName = $args[0];
+$commandArgs = array_slice($args, 1);
+
+foreach ($commands as $command) {
+    if ($command->getName() === $commandName) {
+        exit($command->execute($commandArgs));
+    }
+}
+
+echo "Error: Command not found: {$commandName}\n";
+exit(1); 

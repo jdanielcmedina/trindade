@@ -1,35 +1,30 @@
-# Pastas de armazenamento
+# Dependencies
+/vendor/
+composer.lock
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Cache and logs
 /storage/cache/*
 /storage/logs/*
 /storage/uploads/*
-
-# Manter as pastas vazias
 !storage/cache/.gitkeep
 !storage/logs/.gitkeep
 !storage/uploads/.gitkeep
 
-# Arquivos de configuração
-.env
-.env.*
-!.env.example
-config.local.php
-
-# Dependências
-/vendor/
-/node_modules/
-
-# IDEs e editores
+# IDE and Editor files
 .idea/
 .vscode/
 *.sublime-project
 *.sublime-workspace
-
-# Sistema operacional
+*.swp
+*.swo
 .DS_Store
 Thumbs.db
-*.log
 
 # Adicionais
 /storage/*.key
-composer.lock
 package-lock.json 

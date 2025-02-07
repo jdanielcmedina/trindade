@@ -1,0 +1,94 @@
+<?php
+/**
+ * Trindade Framework
+ *
+ * Configuration File
+ * 
+ * This file contains all the configuration settings for the framework.
+ * Each section is documented with its purpose and available options.
+ * 
+ * @package     Trindade
+ * @author      Jorge Daniel Medina <https://github.com/jdanielcmedina>
+ * @copyright   Copyright (c) 2025, Jorge Daniel Medina
+ * @license     MIT License
+ * @version     1.0.0
+ */
+
+return [
+    /**
+     * Database Configuration
+     */
+    'database' => [
+        'type' => '{{DB_TYPE}}',
+        'host' => '{{DB_HOST}}',
+        'database' => '{{DB_NAME}}',
+        'username' => '{{DB_USER}}',
+        'password' => '{{DB_PASS}}',
+        'charset' => 'utf8mb4',
+        'collation' => 'utf8mb4_unicode_ci',
+        'prefix' => ''
+    ],
+    
+    /**
+     * Mail Configuration
+     */
+    'mail' => [
+        'host' => '{{MAIL_HOST}}',
+        'port' => {{MAIL_PORT}},
+        'username' => '{{MAIL_USER}}',
+        'password' => '{{MAIL_PASS}}',
+        'from' => [
+            'address' => '{{MAIL_FROM}}',
+            'name' => '{{MAIL_NAME}}'
+        ],
+        'encryption' => 'tls'
+    ],
+    
+    /**
+     * Path Configuration
+     */
+    'paths' => [
+        'base' => __DIR__,
+        'public' => __DIR__ . '/public',
+        'storage' => __DIR__ . '/storage',
+        'cache' => __DIR__ . '/storage/cache',
+        'logs' => __DIR__ . '/storage/logs',
+        'uploads' => __DIR__ . '/storage/uploads',
+        'views' => __DIR__ . '/views'
+    ],
+    
+    /**
+     * Cache Configuration
+     */
+    'cache' => [
+        'driver' => 'file',
+        'prefix' => 'trindade:',
+        'path' => __DIR__ . '/storage/cache'
+    ],
+    
+    /**
+     * Session Configuration
+     */
+    'session' => [
+        'name' => 'trindade_session',
+        'lifetime' => 7200,
+        'path' => '/',
+        'domain' => '',
+        'secure' => false,
+        'httpOnly' => true
+    ],
+    
+    /**
+     * Security Configuration
+     */
+    'key' => '{{APP_KEY}}',
+    
+    /**
+     * Application Configuration
+     */
+    'app' => [
+        'debug' => true,
+        'timezone' => 'UTC',
+        'locale' => 'en'
+    ]
+]; 

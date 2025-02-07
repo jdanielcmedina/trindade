@@ -1,476 +1,207 @@
-# 🚀 Trindade Framework
+# Trindade Framework
 
-> A decade of PHP development experience, now open to the community.
+Modern, lightweight and flexible PHP framework for fast and secure web development.
 
-## The Story
+## 📚 Complete Documentation
 
-Trindade Framework is the result of 10 years of personal development and real-world application. What started as my personal toolkit for building web applications has evolved into a robust, minimalist framework that I've used across numerous projects.
+- [Installation Guide](docs/installation.md)
+- [Framework Components](docs/components.md)
+- [Routing System](docs/routing.md)
+- [Plugin System](docs/plugins.md)
+- [Security Guide](docs/security.md)
+- [Contributing Guide](docs/contributing.md)
 
-As a developer who values clean, efficient code over complex dependencies, I've always preferred writing solutions that are straightforward and maintainable. This framework reflects that philosophy - it's lightweight, functional, and gets the job done without unnecessary complexity.
+## 🚀 Quick Installation
 
-After using Trindade privately in my projects for a decade, I've decided to share it with the community. Whether you're a fan of minimalist code like me or just looking for a straightforward PHP framework, you're welcome to use, learn from, and contribute to Trindade.
-
-## Why Trindade?
-
-- **Minimalist by Design**: No external dependencies, no bloat
-- **Battle-Tested**: Used in production for over 10 years
-- **Clean Code**: Focused on readability and maintainability
-- **Practical Approach**: Built from real-world experience
-- **Modern PHP**: Leverages PHP 8.0+ features
-- **Open to Growth**: Ready for community contributions
-
-## 📋 Requirements
-
-- PHP 8.0 or higher
-- MySQL 5.7 or higher
-- Composer (optional)
-
-## 🛠️ Installation
-
-1. **Via Composer**
 ```bash
-composer require jdanielcmedina/trindade
+composer require trindade/framework
 ```
 
-2. **Manual**
-- Clone the repository
-```bash
-git clone https://github.com/jdanielcmedina/trindade.git
-```
-- Or download from [https://github.com/jdanielcmedina/trindade/releases](https://github.com/jdanielcmedina/trindade/releases)
+## 🛠️ Dependencies
 
-## ⚙️ Configuration
+The framework uses third-party libraries to provide robust functionality:
 
-Create a `config.php` file in your project root:
+- **Medoo**: Query builder and database system
+  - Simple and secure interface for database operations
+  - Support for multiple database types (MySQL, PostgreSQL, SQLite)
+  - Protection against SQL injection
+  - Documentation: [https://medoo.in](https://medoo.in)
+
+- **PHPMailer**: Email sending system
+  - Full support for HTML emails
+  - SMTP authentication
+  - Attachments and mass mailing
+  - Documentation: [https://github.com/PHPMailer/PHPMailer](https://github.com/PHPMailer/PHPMailer)
+
+## ⚡ Basic Example
 
 ```php
-return [
-    'debug' => true,
-    
-    // Application paths
-    'paths' => [
-        'views' => __DIR__ . '/views',
-        'cache' => __DIR__ . '/storage/cache',
-        'logs' => __DIR__ . '/storage/logs',
-        'uploads' => __DIR__ . '/storage/uploads',
-        'public' => __DIR__ . '/public',
-        'lang' => __DIR__ . '/lang'
-    ],
-    
-    // MySQL Configuration
-    'mysql' => [
-        'host' => 'localhost',
-        'database' => 'my_db',
-        'username' => 'root',
-        'password' => ''
-    ],
-    
-    // Email Configuration
-    'mail' => [
-        'fromName' => 'My App',
-        'username' => 'email@domain.com',
-        'password' => 'password',
-        'smtp' => [
-            'host' => 'smtp.gmail.com',
-            'port' => 587,
-            'auth' => true,
-            'secure' => 'tls'
-        ]
-    ]
-];
+require_once __DIR__ . '/vendor/autoload.php';
+
+$config = require_once 'config.php';
+$app = new Trindade\Core($config);
+
+// Database example using Medoo
+$app->on('GET /users', function() use ($app) {
+    $users = $app->db->select('users', '*');
+    $app->json($users);
+});
+
+// Email example using PHPMailer
+$app->on('POST /contact', function() use ($app) {
+    $app->mail->send(
+        'user@email.com',
+        'Contact Form',
+        'New message from contact form',
+        ['html' => true]
+    );
+});
 ```
 
-## 📁 Folder Structure
+## 🎯 Main Features
 
-```
-my-project/
-├── config.php
-├── index.php
-├── Trindade.php
-├── public/
-│   ├── css/
-│   ├── js/
-│   └── img/
-├── storage/
-│   ├── cache/
-│   ├── logs/
-│   └── uploads/
-├── views/
-│   ├── layouts/
-│   └── errors/
-└── lang/
-    ├── en.php
-    └── pt.php
-```
-
-## 🚦 Routes
-
-### Basic Routes
+### Powerful Routing
 ```php
-// Simple route
-$app->on('GET /', function() {
-    $this->view('home', ['title' => 'Welcome']);
+// Basic route
+$app->on('GET /users', function() use ($app) {
+    $users = $app->db->select('users', '*');
+    $app->json($users);
 });
 
-// Route with parameter
-$app->on('GET /user/:id', function($id) {
-    $this->json([
-        'action' => 'get user',
-        'id' => $id
-    ]);
-});
-
-// Multiple parameters
-$app->on('GET /posts/:year/:month/:slug', function($year, $month, $slug) {
-    $this->json([
-        'action' => 'get post',
-        'year' => $year,
-        'month' => $month,
-        'slug' => $slug
-    ]);
-});
-
-// Optional parameter with query string
-$app->on('GET /search/:query?', function($query = null) {
-    $page = $this->get('page', 1);    // from query string ?page=1
-    $limit = $this->get('limit', 10); // from query string ?limit=10
-    
-    $this->json([
-        'action' => 'search',
-        'query' => $query,
-        'page' => $page,
-        'limit' => $limit
-    ]);
-});
-```
-
-### HTTP Methods & RESTful Routes
-```php
-// GET - Fetch a product
-$app->on('GET /products/:id', function($id) {
-    $this->json([
-        'action' => 'get product',
-        'id' => $id
-    ]);
-});
-
-// POST - Update a product
-$app->on('POST /products/:id', function($id) {
-    $data = $this->post(); // get POST data
-    $this->json([
-        'action' => 'update product',
-        'id' => $id,
-        'data' => $data
-    ]);
-});
-
-// DELETE - Remove a product
-$app->on('DELETE /products/:id', function($id) {
-    $this->json([
-        'action' => 'delete product',
-        'id' => $id
-    ]);
-});
-```
-
-### Nested Resources
-```php
-$app->on('GET /categories/:categoryId/products/:productId', function($categoryId, $productId) {
-    $this->json([
-        'action' => 'get product in category',
-        'categoryId' => $categoryId,
-        'productId' => $productId
-    ]);
-});
-```
-
-### API Versioning with Groups
-```php
+// Route groups
 $app->group('/api', function() use ($app) {
-    // API v1 group
-    $app->group('/v1', function() use ($app) {
-        $app->on('GET /test', function() {
-            $this->json([
-                'version' => 'v1',
-                'message' => 'API v1 is working'
-            ]);
-        });
-
-        // v1 404 handler
-        $app->on('GET /:any', function() {
-            $this->json([
-                'error' => [
-                    'code' => 404,
-                    'message' => 'Endpoint not found in API v1'
-                ]
-            ], 404);
-        });
+    $app->on('GET /users', function() {
+        // ...
     });
+});
 
-    // API v2 group
-    $app->group('/v2', function() use ($app) {
-        $app->on('GET /test', function() {
-            $this->json([
-                'version' => 'v2',
-                'message' => 'API v2 is working',
-                'timestamp' => time()
-            ]);
-        });
-
-        // v2 404 handler
-        $app->on('GET /:any', function() {
-            $this->json([
-                'status' => 'error',
-                'version' => 'v2',
-                'errors' => [
-                    [
-                        'status' => 404,
-                        'title' => 'Not Found',
-                        'detail' => 'Endpoint not found in API v2',
-                        'timestamp' => time()
-                    ]
-                ]
-            ], 404);
-        });
-    });
+// Dynamic parameters
+$app->on('GET /users/:id', function($id) use ($app) {
+    // ...
 });
 ```
 
-### Route Parameters
-- `:param` - Required parameter
-- `:param?` - Optional parameter
-- `:any` - Wildcard (matches everything, useful for 404 handlers)
-
-### HTTP Methods Supported
-- GET
-- POST
-- PUT
-- DELETE
-- PATCH
-- OPTIONS
-- HEAD
-- ANY (matches any method)
-
-### Response Types
+### Database Query Builder
 ```php
-// JSON Response
-$this->json($data, $statusCode = 200);
+// Simple select
+$users = $app->db->select('users', '*');
 
-// View Response
-$this->view('template', $data);
+// Join with conditions
+$posts = $app->db->select('posts', [
+    '[>]users' => ['user_id' => 'id']
+], [
+    'posts.id',
+    'posts.title',
+    'users.name'
+]);
 
-// Text Response
-$this->text('Hello World', $statusCode = 200);
-```
-
-### Request Data
-```php
-// GET data
-$query = $this->get('search');
-$page = $this->get('page', 1); // with default
-
-// POST data
-$data = $this->post();
-$name = $this->post('name');
-
-// Any request data (GET + POST)
-$data = $this->input();
-$value = $this->input('key', 'default');
-```
-
-## 🎨 Views
-
-```php
-// In index.php
-$app->on('/', function() {
-    return $this->view('home', [
-        'title' => 'Welcome',
-        'user' => ['name' => 'John']
-    ]);
-});
-
-// In views/home.php
-<h1><?= $title ?></h1>
-<p>Hello <?= $user['name'] ?></p>
-```
-
-## 💾 Database
-
-```php
-// Select
-$users = $this->db->select('users', '*', ['active' => 1]);
-
-// Insert
-$id = $this->db->insert('users', [
+// Insert with ID return
+$id = $app->db->insert('users', [
     'name' => 'John',
     'email' => 'john@email.com'
 ]);
-
-// Update
-$this->db->update('users', 
-    ['active' => 0], 
-    ['id' => 1]
-);
-
-// Delete
-$this->db->delete('users', ['id' => 1]);
 ```
 
-## 📧 Email
-
+### Cache System
 ```php
-$this->mail->to('user@email.com')
-    ->subject('Welcome!')
-    ->body('<h1>Hello!</h1>', true)
-    ->attach('/path/to/file.pdf')
-    ->send();
+// Set cache
+$app->cache->set('key', $value, 3600);
+
+// Get from cache
+$value = $app->cache->get('key', $default);
 ```
 
-## 📁 Files
-
+### Session Management
 ```php
-// Upload
-$file = $this->file->upload($_FILES['document']);
-
-// Download
-$this->file->download('/path/to/file.pdf', 'document.pdf');
-
-// Operations
-$this->file->move($source, $dest);
-$this->file->copy($source, $dest);
-$this->file->delete($path);
+$app->session->set('user_id', 123);
+$userId = $app->session->get('user_id');
 ```
 
-## 🔐 Hash & Encryption
-
+### Plugin System
 ```php
-// Password hash
-$hash = $this->hash->make('password123');
-$valid = $this->hash->verify('password123', $hash);
-
-// Encryption
-$encrypted = $this->hash->encrypt('secret data', 'key');
-$decrypted = $this->hash->decrypt($encrypted, 'key');
-
-// Others
-$md5 = $this->hash->md5('text');
-$uuid = $this->hash->uuid();
-```
-
-## 🛠️ Utilities
-
-```php
-// Text
-$slug = $this->utils->slug('Hello World'); // hello-world
-$excerpt = $this->utils->excerpt($longText, 50);
-$safe = $this->utils->sanitize('<script>');
-
-// Formatting
-$number = $this->utils->formatNumber(1234.56); // 1,234.56
-$money = $this->utils->formatMoney(1234.56); // $ 1,234.56
-$date = $this->utils->formatDate('2024-03-14'); // 03/14/2024
-
-// Validation
-$this->utils->isEmail('email@test.com');
-$this->utils->isUrl('https://site.com');
-$this->utils->isCp('1234-567');
-```
-
-## 📝 Logs
-
-```php
-$this->log->emergency('System down!');
-$this->log->error('DB Error', ['table' => 'users']);
-$this->log->info('New record', ['id' => 123]);
-```
-
-## 🎨 Assets
-
-```php
-// In views
-<link href="<?= $this->assets->css('app.css') ?>" rel="stylesheet">
-<script src="<?= $this->assets->js('app.js') ?>"></script>
-<img src="<?= $this->assets->img('logo.png') ?>">
-```
-
-## 🌍 Internationalization
-
-```php
-// In lang/en.php
-return [
-    'messages' => [
-        'welcome' => 'Welcome :name!'
+// Plugin configuration
+'plugins' => [
+    'blog' => [
+        'class' => \Trindade\Plugins\Blog\BlogPlugin::class,
+        'config' => [
+            // plugin settings
+        ]
     ]
-];
+]
 
-// In code
-echo $this->lang->get('messages.welcome', ['name' => 'John']);
-$this->lang->setLocale('pt');
+// Using the plugin
+$app->blog->createPost([
+    'title' => 'My Post',
+    'content' => 'Content...'
+]);
 ```
 
-## 🔄 Cache
-
+### Utilities
 ```php
-// Store
-$this->cache->set('users', $users, 3600);
+// Slugify
+$slug = $app->utils->slug('Post Title');
 
-// Retrieve
-$users = $this->cache->get('users', []);
+// Date formatting
+$date = $app->utils->formatDate('2024-01-01');
 
-// Remove
-$this->cache->remove('users');
+// Secure hash
+$hash = $app->hash->make($password);
 ```
 
-## 🚨 Error Handling
+## 🛠️ Main Components
 
-```php
-try {
-    // code that might fail
-} catch (\Exception $e) {
-    $this->log->error($e->getMessage());
-    return $this->json(['error' => 'An error occurred'], 500);
-}
-```
+- **Core**: Framework core
+- **Database**: Database system with Query Builder
+- **Session**: Session management
+- **Cache**: Cache system
+- **Mail**: Email system
+- **File**: File management
+- **Utils**: Utility functions
+- **Logger**: Logging system
+- **Assets**: Asset management
+- **Lang**: Internationalization
+- **Hash**: Hash and encryption utilities
+- **Cookie**: Cookie management
 
-## 📚 Examples
+## 🔌 Available Plugins
 
-### Basic Example
-```php
-<?php
-require_once 'Trindade.php';
+- **Blog**: Complete blog system
+- **Auth**: Authentication and authorization
+- **Admin**: Administrative panel
+- **API**: RESTful API generator
+- **Forms**: Form builder
+- **SEO**: Search engine optimization
 
-$app = new Trindade\Trindade();
+## 🔒 Security
 
-$app->on('GET /', function() {
-    return $this->view('home', ['title' => 'Welcome']);
-});
+- CSRF Protection
+- Input Sanitization
+- Prepared Statements
+- XSS Prevention
+- Rate Limiting
+- Password Hashing
 
-$app->run();
-```
+## 📦 Requirements
 
-### REST API
-```php
-$app->group('/api', function($app) {
-    $app->on('GET /users', function() {
-        return $this->json($this->db->select('users'));
-    });
-    
-    $app->on('POST /users', function() {
-        $data = $this->post();
-        $id = $this->db->insert('users', $data);
-        return $this->json(['id' => $id], 201);
-    });
-});
-```
+- PHP 7.4 or higher
+- MySQL 5.7 or higher
+- PHP Extensions:
+  - PDO
+  - mbstring
+  - json
+  - openssl
 
 ## 🤝 Contributing
 
 1. Fork the project
-2. Create your feature branch (`git checkout -b feature/AmazingFeature`)
-3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
-4. Push to the branch (`git push origin feature/AmazingFeature`)
-5. Open a Pull Request
+2. Create your feature branch (`git checkout -b feature/MyFeature`)
+3. Commit your changes (`
+
+## 📝 Author
+
+**Jorge Daniel Medina**
+- GitHub: [@jdanielcmedina](https://github.com/jdanielcmedina)
 
 ## 📄 License
 
-This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details. # trindade
+This framework is open-source software licensed under the MIT license.
