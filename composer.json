@@ -1,14 +1,22 @@
 {
     "name": "trindade/framework",
     "description": "Modern, lightweight and flexible PHP framework for fast and secure web development",
-    "type": "project",
+    "type": "library",
+    "keywords": ["framework", "php", "mvc", "lightweight", "fast"],
+    "homepage": "https://github.com/jdanielcmedina/trindade",
     "license": "MIT",
     "authors": [
         {
             "name": "Jorge Daniel Medina",
-            "email": "jdanielcmedina@gmail.com"
+            "email": "jdanielcmedina@gmail.com",
+            "homepage": "https://github.com/jdanielcmedina",
+            "role": "Developer"
         }
     ],
+    "support": {
+        "issues": "https://github.com/jdanielcmedina/trindade/issues",
+        "source": "https://github.com/jdanielcmedina/trindade"
+    },
     "require": {
         "php": ">=8.1",
         "phpmailer/phpmailer": "^6.9",
