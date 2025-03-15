@@ -1,0 +1,9 @@
+{
+    "name": "jdanielcmedina/trindade",
+    "description": "A minimalist PHP framework skeleton",
+    "type": "project",
+    "require": {
+        "jdanielcmedina/lapa": "^1.0"
+    },
+    "license": "MIT"
+}
