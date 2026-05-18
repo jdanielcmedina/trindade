@@ -6,9 +6,9 @@ class Api {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: 'password=' + encodeURIComponent(password),
-      redirect: 'manual',
     })
-    return r.status === 302 || r.status === 200
+    const data = await r.json()
+    return data.ok === true
   }
 
   async call(url, opts = {}) {

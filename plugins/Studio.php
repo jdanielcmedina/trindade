@@ -70,9 +70,10 @@ class Studio
         $input = $this->app->request('password');
         if ($input === $pass) {
             $this->app->session('studio_auth', md5($pass));
-            $this->app->redirect('/studio');
+            echo json_encode(['ok' => true]);
+        } else {
+            echo json_encode(['ok' => false, 'error' => 'Password invalida']);
         }
-        $this->app->redirect('/studio/login');
     }
 
     public function logout()
@@ -100,11 +101,7 @@ class Studio
     public function index()
     {
         $uri = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
-        // Serve static assets from React build
-        if (str_starts_with($uri, '/studio/assets/')) {
-            return $this->asset();
-        }
-        if (!$this->auth()) return $this->app->redirect('/studio/login');
+        if (str_starts_with($uri, '/studio/assets/')) return $this->asset();
         return $this->react();
     }
 
