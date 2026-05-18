@@ -1,0 +1,29 @@
+{
+    "name": "jdanielcmedina/trindade",
+    "description": "A secure, minimalist PHP framework — one file, everything built-in",
+    "type": "library",
+    "license": "MIT",
+    "authors": [
+        {
+            "name": "Daniel Medina",
+            "email": "jdanielcmedina@gmail.com"
+        }
+    ],
+    "require": {
+        "php": "^8.1",
+        "cboden/ratchet": "^0.4",
+        "ext-pdo": "*",
+        "ext-json": "*",
+        "ext-fileinfo": "*",
+        "ext-curl": "*"
+    },
+    "suggest": {
+        "ext-mbstring": "For multibyte string operations",
+        "ext-openssl": "For secure WebSocket connections"
+    },
+    "autoload": {
+        "classmap": [
+            "src/"
+        ]
+    }
+}

@@ -1,0 +1,1910 @@
+<?php
+namespace Trindade;
+
+/**
+ * Trindade Database
+ *
+ * Built-in PDO wrapper. Same expressive API, no external dependency.
+ * Access via $app->db->select(...), $app->db->get(...), etc.
+ */
+class Database
+{
+    private \PDO $pdo;
+    private string $type;
+    private array $log = [];
+    private bool $logging = false;
+
+    public function __construct(array $config)
+    {
+        $this->type = $config['type'] ?? 'mysql';
+
+        $dsn = match ($this->type) {
+            'sqlite' => 'sqlite:' . $config['database'],
+            'pgsql'  => "pgsql:host={$config['host']};dbname={$config['database']};port=" . ($config['port'] ?? 5432),
+            'mssql'  => "dblib:host={$config['host']};dbname={$config['database']}",
+            'sybase' => "sybase:host={$config['host']};dbname={$config['database']}",
+            default  => "mysql:host={$config['host']};dbname={$config['database']};port=" . ($config['port'] ?? 3306) . ";charset=" . ($config['charset'] ?? 'utf8mb4'),
+        };
+
+        $this->pdo = new \PDO(
+            $dsn,
+            $config['username'] ?? null,
+            $config['password'] ?? null,
+            [
+                \PDO::ATTR_ERRMODE            => \PDO::ERRMODE_EXCEPTION,
+                \PDO::ATTR_DEFAULT_FETCH_MODE => \PDO::FETCH_ASSOC,
+                \PDO::ATTR_EMULATE_PREPARES   => false,
+            ]
+        );
+    }
+
+    public function query(string $sql, array $params = []): \PDOStatement
+    {
+        $start = microtime(true);
+        $stmt = $this->pdo->prepare($sql);
+        $stmt->execute($params);
+        $elapsed = round((microtime(true) - $start) * 1000, 2);
+
+        if ($this->logging) {
+            $this->log[] = ['sql' => $sql, 'params' => $params, 'ms' => $elapsed];
+        }
+        return $stmt;
+    }
+
+    public function exec(string $sql, array $params = []): int
+    {
+        $start = microtime(true);
+        $stmt = $this->pdo->prepare($sql);
+        $stmt->execute($params);
+        $elapsed = round((microtime(true) - $start) * 1000, 2);
+
+        if ($this->logging) {
+            $this->log[] = ['sql' => $sql, 'params' => $params, 'ms' => $elapsed];
+        }
+        return $stmt->rowCount();
+    }
+
+    public function select(string $table, $columns = '*', array $where = []): array
+    {
+        $cols = $this->cols($columns);
+        [$w, $p] = $this->where($where);
+        $c = $this->clauses($where);
+        return $this->query("SELECT {$cols} FROM {$table}{$w}{$c}", $p)->fetchAll();
+    }
+
+    public function get(string $table, $columns = '*', array $where = []): ?array
+    {
+        $cols = $this->cols($columns);
+        [$w, $p] = $this->where($where);
+        $c = $this->clauses($where);
+        $r = $this->query("SELECT {$cols} FROM {$table}{$w}{$c} LIMIT 1", $p)->fetch();
+        return $r ?: null;
+    }
+
+    public function has(string $table, array $where = []): bool
+    {
+        return $this->count($table, $where) > 0;
+    }
+
+    public function count(string $table, array $where = []): int
+    {
+        [$w, $p] = $this->where($where);
+        return (int)$this->query("SELECT COUNT(*) FROM {$table}{$w}", $p)->fetchColumn();
+    }
+
+    public function max(string $table, string $col, array $where = []): mixed
+    {
+        [$w, $p] = $this->where($where);
+        return $this->query("SELECT MAX({$col}) FROM {$table}{$w}", $p)->fetchColumn();
+    }
+
+    public function min(string $table, string $col, array $where = []): mixed
+    {
+        [$w, $p] = $this->where($where);
+        return $this->query("SELECT MIN({$col}) FROM {$table}{$w}", $p)->fetchColumn();
+    }
+
+    public function avg(string $table, string $col, array $where = []): mixed
+    {
+        [$w, $p] = $this->where($where);
+        return $this->query("SELECT AVG({$col}) FROM {$table}{$w}", $p)->fetchColumn();
+    }
+
+    public function sum(string $table, string $col, array $where = []): mixed
+    {
+        [$w, $p] = $this->where($where);
+        return $this->query("SELECT SUM({$col}) FROM {$table}{$w}", $p)->fetchColumn();
+    }
+
+    public function insert(string $table, array $data): string|int
+    {
+        $cols = implode(', ', array_keys($data));
+        $ph = implode(', ', array_fill(0, count($data), '?'));
+        $this->exec("INSERT INTO {$table} ({$cols}) VALUES ({$ph})", array_values($data));
+        return $this->id();
+    }
+
+    public function insert_batch(string $table, array $rows): array
+    {
+        if (empty($rows)) return [];
+        $first = reset($rows);
+        $cols = implode(', ', array_keys($first));
+        $ph = '(' . implode(', ', array_fill(0, count($first), '?')) . ')';
+        $all = implode(', ', array_fill(0, count($rows), $ph));
+        $params = [];
+        foreach ($rows as $r) $params = array_merge($params, array_values($r));
+        $this->exec("INSERT INTO {$table} ({$cols}) VALUES {$all}", $params);
+        $last = $this->id();
+        $ids = [];
+        for ($i = 0; $i < count($rows); $i++) $ids[] = $last + $i;
+        return $ids;
+    }
+
+    /**
+     * Paginate results.
+     *
+     * $app->db->pages('users', 10, 1)                    → page 1, 10 per page
+     * $app->db->pages('users', 10, 1, ['status' => 1])  → with filter
+     */
+    public function pages(string $table, int $per_page = 10, int $page = 1, array $where = []): array
+    {
+        $total = $this->count($table, $where);
+        $pages = (int)ceil($total / max($per_page, 1));
+        $page = max(1, min($page, $pages ?: 1));
+        $offset = ($page - 1) * $per_page;
+
+        $where['LIMIT'] = [$offset, $per_page];
+        $rows = $this->select($table, '*', $where);
+
+        return [
+            'rows'  => $rows,
+            'total' => $total,
+            'pages' => $pages,
+            'page'  => $page,
+            'per_page' => $per_page,
+        ];
+    }
+
+    public function update(string $table, array $data, array $where = []): int
+    {
+        $sets = implode(', ', array_map(fn($c) => "{$c} = ?", array_keys($data)));
+        $params = array_values($data);
+        [$w, $wp] = $this->where($where);
+        return $this->exec("UPDATE {$table} SET {$sets}{$w}", array_merge($params, $wp));
+    }
+
+    public function delete(string $table, array $where = []): int
+    {
+        [$w, $p] = $this->where($where);
+        return $this->exec("DELETE FROM {$table}{$w}", $p);
+    }
+
+    public function begin(): void { $this->pdo->beginTransaction(); }
+    public function commit(): void { $this->pdo->commit(); }
+    public function rollback(): void { $this->pdo->rollBack(); }
+
+    public function transaction(callable $fn): mixed
+    {
+        $this->begin();
+        try { $r = $fn($this); $this->commit(); return $r; }
+        catch (\Throwable $e) { $this->rollback(); throw $e; }
+    }
+
+    public function id(): string|int
+    {
+        $id = $this->pdo->lastInsertId();
+        return is_numeric($id) ? (int)$id : $id;
+    }
+
+    public function pdo(): \PDO { return $this->pdo; }
+
+    public function log(bool $on = true): self
+    {
+        $this->logging = $on;
+        if (!$on) $this->log = [];
+        return $this;
+    }
+
+    public function log_get(): array { return $this->log; }
+
+    public function type(): string { return $this->type; }
+
+    private function cols($columns): string
+    {
+        if ($columns === '*' || $columns === null) return '*';
+        if (is_string($columns)) return $columns;
+        return implode(', ', (array)$columns);
+    }
+
+    private function where(array $conds): array
+    {
+        if (empty($conds)) return ['', []];
+        $c = []; $p = [];
+
+        foreach ($conds as $k => $v) {
+            if (in_array($k, ['LIMIT', 'ORDER', 'GROUP', 'HAVING'], true)) continue;
+
+            if ($k === 'OR') {
+                $or = [];
+                foreach ($v as $oc) {
+                    [$s, $sp] = $this->where([$oc]);
+                    $or[] = '(' . ltrim($s, ' WHERE ') . ')';
+                    $p = array_merge($p, $sp);
+                }
+                $c[] = '(' . implode(' OR ', $or) . ')';
+                continue;
+            }
+
+            $col = $k; $op = '=';
+            if (preg_match('/^(.+)\[([^\]]+)\]$/', $k, $m)) {
+                $col = $m[1];
+                $op = match ($m[2]) {
+                    '>' => '>', '>=' => '>=', '<' => '<', '<=' => '<=',
+                    '!' => '!=', '~' => 'LIKE', '!~' => 'NOT LIKE',
+                    '<>' => 'BETWEEN', default => '=',
+                };
+            }
+
+            if ($v === null) { $c[] = "{$col} IS NULL"; continue; }
+
+            if (is_array($v) && $op !== 'BETWEEN') {
+                $ph = implode(', ', array_fill(0, count($v), '?'));
+                $not = ($op === '!=') ? 'NOT' : '';
+                $c[] = "{$col} {$not} IN ({$ph})";
+                $p = array_merge($p, $v);
+                continue;
+            }
+
+            if ($op === 'BETWEEN' && is_array($v) && count($v) === 2) {
+                $c[] = "{$col} BETWEEN ? AND ?";
+                $p[] = $v[0]; $p[] = $v[1];
+                continue;
+            }
+
+            $c[] = "{$col} {$op} ?";
+            $p[] = $v;
+        }
+
+        return [empty($c) ? '' : ' WHERE ' . implode(' AND ', $c), $p];
+    }
+
+    private function clauses(array $conds): string
+    {
+        $sql = '';
+        if (isset($conds['GROUP'])) {
+            $g = is_array($conds['GROUP']) ? implode(', ', $conds['GROUP']) : $conds['GROUP'];
+            $sql .= " GROUP BY {$g}";
+        }
+        if (isset($conds['ORDER'])) {
+            $o = $conds['ORDER'];
+            if (is_array($o)) {
+                $parts = [];
+                foreach ($o as $col => $dir) {
+                    $parts[] = is_int($col) ? $dir : "{$col} " . strtoupper($dir);
+                }
+                $sql .= " ORDER BY " . implode(', ', $parts);
+            } else {
+                $sql .= " ORDER BY {$o}";
+            }
+        }
+        if (isset($conds['LIMIT'])) {
+            $l = $conds['LIMIT'];
+            $sql .= is_array($l) ? " LIMIT " . (int)$l[0] . ", " . (int)$l[1] : " LIMIT " . (int)$l;
+        }
+        if (isset($conds['HAVING'])) {
+            $sql .= " HAVING " . $conds['HAVING'];
+        }
+        return $sql;
+    }
+}
+
+// =============================================================================
+
+/**
+ * Trindade Mail
+ *
+ * Fluent mailer. SMTP or PHP mail() fallback. No external dependency.
+ *
+ * $app->mail
+ *   ->to('john@example.com')
+ *   ->cc('jane@example.com')
+ *   ->subject('Hello')
+ *   ->html('<h1>Hello</h1>')
+ *   ->send();
+ */
+class Mail
+{
+    private array $to = [];
+    private array $cc = [];
+    private array $bcc = [];
+    private string $from_email = '';
+    private string $from_name = '';
+    private string $subject = '';
+    private string $html = '';
+    private string $text = '';
+    private array $attachments = [];
+    private array $headers = [];
+    private array $config;
+    private array $errors = [];
+
+    public function __construct(array $config = [])
+    {
+        $this->config = $config;
+        if (!empty($config['from'])) $this->from_email = $config['from'];
+        if (!empty($config['name'])) $this->from_name = $config['name'];
+    }
+
+    public function to(string|array $email, string $name = ''): self
+    {
+        if (is_array($email)) foreach ($email as $e) $this->to[] = $e;
+        else $this->to[] = $name ? "{$name} <{$email}>" : $email;
+        return $this;
+    }
+
+    public function cc(string|array $email, string $name = ''): self
+    {
+        if (is_array($email)) foreach ($email as $e) $this->cc[] = $e;
+        else $this->cc[] = $name ? "{$name} <{$email}>" : $email;
+        return $this;
+    }
+
+    public function bcc(string|array $email, string $name = ''): self
+    {
+        if (is_array($email)) foreach ($email as $e) $this->bcc[] = $e;
+        else $this->bcc[] = $name ? "{$name} <{$email}>" : $email;
+        return $this;
+    }
+
+    public function from(string $email, string $name = ''): self
+    {
+        $this->from_email = $email;
+        $this->from_name = $name;
+        return $this;
+    }
+
+    public function subject(string $s): self { $this->subject = $s; return $this; }
+    public function html(string $h): self { $this->html = $h; return $this; }
+    public function text(string $t): self { $this->text = $t; return $this; }
+    public function message(string $body): self { $this->html = $body; return $this; }
+    public function header(string $k, string $v): self { $this->headers[$k] = $v; return $this; }
+    public function errors(): array { return $this->errors; }
+
+    public function attach(string $path, ?string $name = null): self
+    {
+        if (file_exists($path)) {
+            $this->attachments[] = ['path' => $path, 'name' => $name ?? basename($path)];
+        }
+        return $this;
+    }
+
+    public function send(): bool
+    {
+        $this->errors = [];
+        if (empty($this->to)) { $this->errors[] = 'No recipients'; return false; }
+        if (empty($this->from_email)) { $this->errors[] = 'No sender'; return false; }
+
+        if (!empty($this->config['host'])) return $this->send_smtp();
+        return $this->send_php();
+    }
+
+    private function send_php(): bool
+    {
+        try {
+            $to = implode(', ', $this->to);
+            $headers = ['MIME-Version: 1.0'];
+            $headers[] = $this->from_name
+                ? "From: {$this->from_name} <{$this->from_email}>"
+                : "From: {$this->from_email}";
+            if (!empty($this->cc)) $headers[] = 'Cc: ' . implode(', ', $this->cc);
+            if (!empty($this->bcc)) $headers[] = 'Bcc: ' . implode(', ', $this->bcc);
+            foreach ($this->headers as $k => $v) $headers[] = "{$k}: {$v}";
+
+            if (!empty($this->attachments)) {
+                $boundary = 'Trindade-boundary';
+                $headers[] = 'Content-Type: multipart/mixed; boundary="' . $boundary . '"';
+                $message = $this->build_mixed($boundary);
+            } elseif (!empty($this->html) && !empty($this->text)) {
+                $b = md5(uniqid());
+                $headers[] = 'Content-Type: multipart/alternative; boundary="' . $b . '"';
+                $message = "--{$b}\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n{$this->text}\r\n\r\n"
+                         . "--{$b}\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n{$this->html}\r\n\r\n"
+                         . "--{$b}--";
+            } elseif (!empty($this->html)) {
+                $headers[] = 'Content-Type: text/html; charset=UTF-8';
+                $message = $this->html;
+            } else {
+                $headers[] = 'Content-Type: text/plain; charset=UTF-8';
+                $message = $this->text;
+            }
+
+            $ok = @mail($to, $this->subject, $message ?? '', implode("\r\n", $headers));
+            if (!$ok) $this->errors[] = 'mail() failed';
+            $this->reset();
+            return $ok;
+        } catch (\Throwable $e) { $this->errors[] = $e->getMessage(); $this->reset(); return false; }
+    }
+
+    private function send_smtp(): bool
+    {
+        try {
+            $host = $this->config['host'];
+            $port = (int)($this->config['port'] ?? 587);
+            $secure = $this->config['secure'] ?? 'tls';
+            $user = $this->config['username'] ?? '';
+            $pass = $this->config['password'] ?? '';
+
+            $s = @fsockopen(($secure === 'ssl' ? 'ssl://' : '') . $host, $port, $en, $es, 10);
+            if (!$s) { $this->errors[] = "SMTP: {$es} ({$en})"; $this->reset(); return false; }
+
+            $this->smtp_read($s);
+            $this->smtp_cmd($s, "EHLO " . gethostname());
+
+            if ($secure === 'tls') {
+                $this->smtp_cmd($s, "STARTTLS");
+                stream_socket_enable_crypto($s, true, STREAM_CRYPTO_METHOD_TLS_CLIENT);
+                $this->smtp_cmd($s, "EHLO " . gethostname());
+            }
+
+            if (!empty($user)) {
+                $this->smtp_cmd($s, "AUTH LOGIN");
+                $this->smtp_cmd($s, base64_encode($user));
+                $this->smtp_cmd($s, base64_encode($pass));
+            }
+
+            $this->smtp_cmd($s, "MAIL FROM:<{$this->from_email}>");
+            foreach (array_merge($this->to, $this->cc, $this->bcc) as $r) {
+                $addr = $this->extract($r);
+                $this->smtp_cmd($s, "RCPT TO:<{$addr}>");
+            }
+
+            $this->smtp_cmd($s, "DATA");
+            fwrite($s, $this->build_mime() . "\r\n.\r\n");
+            $this->smtp_read($s);
+            $this->smtp_cmd($s, "QUIT");
+            fclose($s);
+            $this->reset();
+            return true;
+        } catch (\Throwable $e) { $this->errors[] = $e->getMessage(); $this->reset(); return false; }
+    }
+
+    private function build_mixed(string $boundary): string
+    {
+        $msg = "This is a multi-part message in MIME format.\r\n--{$boundary}\r\n";
+        $alt = md5(uniqid()) . '-alt';
+        $ht = !empty($this->html); $tt = !empty($this->text);
+
+        if ($tt && $ht) {
+            $msg .= "Content-Type: multipart/alternative; boundary=\"{$alt}\"\r\n\r\n"
+                  . "--{$alt}\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n{$this->text}\r\n\r\n"
+                  . "--{$alt}\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n{$this->html}\r\n\r\n"
+                  . "--{$alt}--\r\n";
+        } elseif ($ht) {
+            $msg .= "Content-Type: text/html; charset=UTF-8\r\n\r\n{$this->html}\r\n";
+        } elseif ($tt) {
+            $msg .= "Content-Type: text/plain; charset=UTF-8\r\n\r\n{$this->text}\r\n";
+        }
+
+        foreach ($this->attachments as $a) {
+            $c = chunk_split(base64_encode(file_get_contents($a['path'])));
+            $msg .= "--{$boundary}\r\n"
+                  . "Content-Type: application/octet-stream; name=\"{$a['name']}\"\r\n"
+                  . "Content-Disposition: attachment; filename=\"{$a['name']}\"\r\n"
+                  . "Content-Transfer-Encoding: base64\r\n\r\n{$c}\r\n";
+        }
+        return $msg . "--{$boundary}--";
+    }
+
+    private function build_mime(): string
+    {
+        $from = $this->from_name ? "{$this->from_name} <{$this->from_email}>" : $this->from_email;
+        $msg = "From: {$from}\r\n";
+        if (!empty($this->to)) $msg .= "To: " . implode(', ', $this->to) . "\r\n";
+        if (!empty($this->cc)) $msg .= "Cc: " . implode(', ', $this->cc) . "\r\n";
+        if (!empty($this->bcc)) $msg .= "Bcc: " . implode(', ', $this->bcc) . "\r\n";
+        $msg .= "Subject: {$this->subject}\r\nMIME-Version: 1.0\r\n";
+        foreach ($this->headers as $k => $v) $msg .= "{$k}: {$v}\r\n";
+
+        if (!empty($this->attachments)) {
+            $b = 'Trindade-boundary';
+            $msg .= "Content-Type: multipart/mixed; boundary=\"{$b}\"\r\n\r\n" . $this->build_mixed($b);
+        } elseif (!empty($this->html) && !empty($this->text)) {
+            $b = md5(uniqid());
+            $msg .= "Content-Type: multipart/alternative; boundary=\"{$b}\"\r\n\r\n"
+                  . "--{$b}\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n{$this->text}\r\n\r\n"
+                  . "--{$b}\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n{$this->html}\r\n\r\n"
+                  . "--{$b}--";
+        } elseif (!empty($this->html)) {
+            $msg .= "Content-Type: text/html; charset=UTF-8\r\n\r\n{$this->html}";
+        } else {
+            $msg .= "Content-Type: text/plain; charset=UTF-8\r\n\r\n{$this->text}";
+        }
+        return $msg;
+    }
+
+    private function smtp_cmd($s, string $cmd): void
+    {
+        fwrite($s, $cmd . "\r\n");
+        $r = $this->smtp_read($s);
+        $code = (int)substr($r, 0, 3);
+        if ($code >= 400) throw new \Exception("SMTP {$code}: {$r}");
+    }
+
+    private function smtp_read($s): string
+    {
+        $r = '';
+        while ($l = fgets($s, 512)) { $r .= $l; if (isset($l[3]) && $l[3] === ' ') break; }
+        return trim($r);
+    }
+
+    private function extract(string $s): string
+    {
+        if (preg_match('/<(.+?)>/', $s, $m)) return trim($m[1]);
+        return trim($s);
+    }
+
+    private function reset(): void
+    {
+        $this->to = []; $this->cc = []; $this->bcc = [];
+        $this->subject = ''; $this->html = ''; $this->text = '';
+        $this->attachments = []; $this->headers = [];
+        if (!empty($this->config['from'])) $this->from_email = $this->config['from'];
+        if (!empty($this->config['name'])) $this->from_name = $this->config['name'];
+    }
+}
+
+// =============================================================================
+
+/**
+ * Trindade WebSocket Server
+ *
+ * Start: php bin/ws start --port=8080
+ * Access via $app->ws when loaded as plugin.
+ *
+ * Requires: cboden/ratchet
+ */
+class WebSocket implements \Ratchet\MessageComponentInterface
+{
+    private array $clients = [];
+    private \SplObjectStorage $conns;
+    private string $host;
+    private int $port;
+    private array $events = [];
+    private array $channels = [];
+
+    public function __construct(array $config = [])
+    {
+        $this->conns = new \SplObjectStorage();
+        $this->host = $config['host'] ?? '0.0.0.0';
+        $this->port = (int)($config['port'] ?? 8080);
+    }
+
+    public function start(): void
+    {
+        if (php_sapi_name() !== 'cli') throw new \RuntimeException('CLI only');
+
+        echo "Trindade WS on ws://{$this->host}:{$this->port}\n";
+
+        $server = \Ratchet\Server\IoServer::factory(
+            new \Ratchet\Http\HttpServer(new \Ratchet\WebSocket\WsServer($this)),
+            $this->port,
+            $this->host
+        );
+        $server->run();
+    }
+
+    public function onOpen(\Ratchet\ConnectionInterface $conn): void
+    {
+        $this->conns->attach($conn);
+        $id = spl_object_hash($conn);
+        $this->clients[$id] = $conn;
+        $this->emit('open', ['id' => $id]);
+    }
+
+    public function onMessage(\Ratchet\ConnectionInterface $from, $msg): void
+    {
+        $id = spl_object_hash($from);
+        $data = json_decode($msg, true) ?: ['raw' => $msg];
+        $type = $data['type'] ?? 'message';
+
+        if ($type === 'join' && isset($data['channel'])) {
+            $this->channels[$data['channel']][$id] = $from;
+            $from->send(json_encode(['type' => 'joined', 'channel' => $data['channel']]));
+            return;
+        }
+        if ($type === 'leave' && isset($data['channel'])) {
+            unset($this->channels[$data['channel']][$id]);
+            $from->send(json_encode(['type' => 'left', 'channel' => $data['channel']]));
+            return;
+        }
+
+        $this->emit('message', ['id' => $id, 'data' => $data]);
+    }
+
+    public function onClose(\Ratchet\ConnectionInterface $conn): void
+    {
+        $id = spl_object_hash($conn);
+        foreach ($this->channels as $ch => $c) unset($this->channels[$ch][$id]);
+        unset($this->clients[$id]);
+        $this->conns->detach($conn);
+        $this->emit('close', ['id' => $id]);
+    }
+
+    public function onError(\Ratchet\ConnectionInterface $conn, \Exception $e): void
+    {
+        $conn->close();
+    }
+
+    public function send(string $id, string $type, array $data = []): void
+    {
+        if (isset($this->clients[$id])) {
+            $this->clients[$id]->send(json_encode(array_merge(['type' => $type], $data)));
+        }
+    }
+
+    public function broadcast(string $type, array $data = []): void
+    {
+        $payload = json_encode(array_merge(['type' => $type], $data));
+        foreach ($this->conns as $client) $client->send($payload);
+    }
+
+    public function channel(string $channel, string $type, array $data = []): void
+    {
+        if (!isset($this->channels[$channel])) return;
+        $payload = json_encode(array_merge(['type' => $type, 'channel' => $channel], $data));
+        foreach ($this->channels[$channel] as $client) $client->send($payload);
+    }
+
+    public function on(string $event, callable $handler): self
+    {
+        $this->events[$event][] = $handler;
+        return $this;
+    }
+
+    private function emit(string $event, array $data = []): void
+    {
+        if (!isset($this->events[$event])) return;
+        foreach ($this->events[$event] as $handler) $handler($data);
+    }
+
+    public function count(): int { return $this->conns->count(); }
+    public function channels(): array { return array_keys($this->channels); }
+}
+
+// =============================================================================
+
+/**
+ * Trindade Framework Core
+ *
+ * Minimalist, secure PHP framework. Everything accessible via $app->...
+ * Single words, no camelCase, no snake_case.
+ *
+ * @package     Trindade
+ * @author      Daniel Medina <jdanielcmedina@gmail.com>
+ * @copyright   2026 Daniel Medina
+ * @license     MIT License
+ * @version     2.0.0
+ */
+class Trindade
+{
+    private array $config;
+    private array $paths = [];
+    private array $routes = [];
+    private string $group = '';
+    private string $vhost = '';
+    private array $params = [];
+    private array $notfound = [];
+    private array $middleware = [];
+    private $fallback = null;
+    private int $code = 200;
+
+    public $db = null;
+    public $mail = null;
+    public $ws = null;
+
+    private array $perm = ['folder' => 0755, 'private' => 0600, 'public' => 0644];
+
+    private const CSS = '
+        body{font-family:-apple-system,system-ui,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;line-height:1.6;margin:0;padding:20px;background:#f8f9fa;color:#333}
+        .box{max-width:1200px;margin:0 auto;background:white;border-radius:8px;box-shadow:0 2px 4px rgba(0,0,0,0.1);overflow:hidden}
+        .head{background:#dc3545;color:white;padding:2rem}
+        .body{padding:2rem}
+        .title{font-size:24px;font-weight:500;margin:0}
+        .msg{font-size:16px;margin:1rem 0;color:#666}
+        .details{background:#f8f9fa;padding:1rem;border-radius:4px;margin:1rem 0}
+        .stack{font-family:monospace;font-size:13px;white-space:pre-wrap;background:#f1f3f5;padding:1rem;border-radius:4px;color:#666}
+    ';
+
+    public function __construct(array $config = [], ?array $database = null)
+    {
+        try {
+            $root = dirname(getcwd()) . DIRECTORY_SEPARATOR;
+
+            $this->paths = [
+                'root'    => $root,
+                'routes'  => $root . 'routes',
+                'views'   => $root . 'views',
+                'helpers' => $root . 'helpers',
+                'storage' => [
+                    'cache'   => $root . 'storage/cache',
+                    'logs'    => $root . 'storage/logs',
+                    'uploads' => $root . 'storage/uploads',
+                    'temp'    => $root . 'storage/temp',
+                ],
+            ];
+
+            foreach ($this->paths['storage'] as $type => $path) {
+                if (!is_dir($path)) @mkdir($path, $this->perm['folder'], true);
+                if ($type === 'uploads') @chmod($path, $this->perm['public']);
+            }
+
+            // Load config.php from project root if exists
+            $cfg_file = $root . 'config.php';
+            if (file_exists($cfg_file)) {
+                $file_config = require $cfg_file;
+                if (is_array($file_config)) $config = array_replace_recursive($file_config, $config);
+            }
+
+            $this->config = array_replace_recursive([
+                'debug'    => false,
+                'secure'   => false,
+                'errors'   => true,
+                'timezone' => 'UTC',
+                'upload'   => [
+                    'max_size'   => 5242880,
+                    'types'      => ['image/jpeg', 'image/png', 'application/pdf'],
+                    'extensions' => ['jpg', 'jpeg', 'png', 'gif', 'pdf', 'webp'],
+                ],
+                'cache'    => ['ttl' => 3600],
+                'cors'     => [
+                    'on'          => false,
+                    'origins'     => [],
+                    'methods'     => 'GET, POST, PUT, DELETE, OPTIONS, PATCH',
+                    'headers'     => 'Content-Type, Authorization, X-Csrf-Token',
+                    'credentials' => false,
+                ],
+                'security' => ['rate' => false, 'max' => 60, 'window' => 60],
+            ], $config);
+
+            if ($database) $this->config['db'] = $database;
+
+            $this->secure();
+            date_default_timezone_set($this->config['timezone'] ?? 'UTC');
+            $this->init();
+            $this->load('helpers');
+        } catch (\Throwable $e) {
+            $this->debug(
+                $this->config['debug'] ? $e->getMessage() : 'Internal server error',
+                500,
+                $this->config['debug'] ? $e->getTraceAsString() : null
+            );
+        }
+    }
+
+    private function secure(): void
+    {
+        if (!($this->config['secure'] ?? false)) return;
+
+        $is = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on')
+            || (isset($_SERVER['SERVER_PORT']) && $_SERVER['SERVER_PORT'] === 443)
+            || (isset($_SERVER['HTTP_X_FORWARDED_PROTO']) && $_SERVER['HTTP_X_FORWARDED_PROTO'] === 'https');
+
+        if (!$is && !headers_sent()) {
+            header('HTTP/1.1 301 Moved Permanently');
+            header('Location: https://' . $_SERVER['HTTP_HOST'] . $_SERVER['REQUEST_URI']);
+            exit;
+        }
+    }
+
+    private function init(): void
+    {
+        try {
+            if (isset($this->config['db'])) {
+                try { $this->db = new Database($this->config['db']); }
+                catch (\PDOException $e) {
+                    $this->log("DB error", "error");
+                    throw new \Exception("Database connection failed");
+                }
+            }
+
+            if (isset($this->config['mail'])) {
+                $this->mail = new Mail($this->config['mail']);
+            } else {
+                $this->mail = new Mail([]); // sempre disponível
+            }
+
+            if (!isset($this->config['test'])) {
+                $this->load('routes');
+                register_shutdown_function([$this, 'run']);
+            }
+
+            $this->plugins();
+        } catch (\Throwable $e) {
+            $this->debug(
+                $this->config['debug'] ? $e->getMessage() : 'Internal server error',
+                500,
+                $this->config['debug'] ? $e->getTraceAsString() : null
+            );
+        }
+    }
+
+    private function plugins(): void
+    {
+        $path = $this->paths['root'] . 'plugins' . DIRECTORY_SEPARATOR;
+        if (!is_dir($path)) return;
+
+        foreach (new \DirectoryIterator($path) as $file) {
+            if ($file->isDot() || $file->isDir() || $file->getExtension() !== 'php') continue;
+            $class = 'Trindade\\Plugins\\' . $file->getBasename('.php');
+            if (class_exists($class)) {
+                $name = strtolower($file->getBasename('.php'));
+                $this->{$name} = new $class($this);
+                $this->log("Plugin: {$name}", "debug");
+            }
+        }
+    }
+
+    // ======================== ROUTING ========================
+
+    public function on(string $route, callable $handler): self
+    {
+        $parts = explode(' ', $route, 2);
+        $methods = explode('|', $parts[0]);
+        $path = $parts[1] ?? '';
+
+        $full = $path;
+        if ($this->group) $full = rtrim($this->group, '/') . '/' . ltrim($path, '/');
+        $full = $full === '/' ? '/' : rtrim($full, '/');
+
+        $fn = \Closure::bind($handler, $this, static::class);
+        foreach ($methods as $m) {
+            $this->routes[$m][$full] = ['fn' => $fn, 'vhost' => $this->vhost];
+        }
+        return $this;
+    }
+
+    public function any(callable $handler): self { $this->fallback = $handler; return $this; }
+
+    /**
+     * List registered routes (for CLI inspection).
+     */
+    public function routes(): array { return $this->routes; }
+
+    /**
+     * Add middleware to the pipeline.
+     *
+     * $app->use(function ($next) use ($app) {
+     *     if (!$app->csrf_check()) return $app->error('CSRF', 403);
+     *     return $next();
+     * });
+     */
+    public function use(callable $handler): self
+    {
+        $this->middleware[] = $handler;
+        return $this;
+    }
+
+    public function group(string $prefix, callable $handler): self
+    {
+        $prev = $this->group;
+        if ($prefix !== '/') $prefix = rtrim($prefix, '/');
+        $this->group = $prev ? rtrim($prev, '/') . '/' . ltrim($prefix, '/') : $prefix;
+        $handler($this);
+        $this->group = $prev;
+        return $this;
+    }
+
+    public function vhost(string $host, callable $handler): self
+    {
+        $prev = $this->vhost; $this->vhost = $host;
+        $handler($this);
+        $this->vhost = $prev;
+        return $this;
+    }
+
+    public function notfound(callable $handler): self
+    {
+        $this->notfound[$this->group ?: '/'] = $handler;
+        return $this;
+    }
+
+    public function run(): void
+    {
+        try {
+            $method = $_SERVER['REQUEST_METHOD'];
+            $uri = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
+            $uri = $uri === '/' ? '/' : rtrim($uri, '/');
+            $host = $_SERVER['HTTP_HOST'] ?? '';
+
+            if ($method === 'OPTIONS' && ($this->config['cors']['on'] ?? false)) {
+                $this->cors(); http_response_code(204); exit;
+            }
+
+            $this->send_headers();
+
+            // Route matching (the final step in middleware chain)
+            $route_handler = function () use ($method, $uri, $host) {
+                if (isset($this->routes[$method])) {
+                    foreach ($this->routes[$method] as $pattern => $route) {
+                        if (!empty($route['vhost']) && $route['vhost'] !== $host) continue;
+
+                        $regex = preg_replace('/:[a-zA-Z]+/', '([^/]+)', $pattern);
+                        $regex = '/^' . str_replace('/', '\/', $regex) . '$/';
+
+                        if (preg_match($regex, $uri, $m)) {
+                            preg_match_all('/:([a-zA-Z]+)/', $pattern, $names);
+                            array_shift($m);
+                            $this->params = array_combine($names[1] ?? [], $m);
+
+                            if ($this->config['security']['rate'] ?? false) $this->rate($uri);
+
+                            return $route['fn']($this);
+                        }
+                    }
+                }
+                return $this->notfound_run($uri, true);
+            };
+
+            // Build middleware chain
+            $chain = $route_handler;
+            foreach (array_reverse($this->middleware) as $mw) {
+                $next = $chain;
+                $chain = function () use ($mw, $next) {
+                    return $mw($next);
+                };
+            }
+
+            $r = $chain();
+
+            if ($r !== null) {
+                if (is_array($r)) {
+                    if (!headers_sent()) header('Content-Type: application/json; charset=utf-8');
+                    echo json_encode($r, JSON_UNESCAPED_UNICODE);
+                } else echo $r;
+            }
+        } catch (\Throwable $e) {
+            $this->debug(
+                $this->config['debug'] ? $e->getMessage() : 'Internal server error',
+                500,
+                $this->config['debug'] ? $e->getTraceAsString() : null
+            );
+        }
+    }
+
+    private function notfound_run(string $uri, bool $return = false)
+    {
+        $handler = null; $best = 0;
+        foreach ($this->notfound as $prefix => $fn) {
+            if (strpos($uri, $prefix) === 0 && strlen($prefix) > $best) {
+                $best = strlen($prefix); $handler = $fn;
+            }
+        }
+        if ($handler) {
+            $r = $handler($this);
+            if ($return) return $r;
+            if ($r !== null) {
+                if (is_array($r)) {
+                    if (!headers_sent()) header('Content-Type: application/json; charset=utf-8');
+                    echo json_encode($r, JSON_UNESCAPED_UNICODE);
+                } else echo $r;
+                return;
+            }
+        }
+        if ($return) return null;
+        $this->debug('Not Found', 404);
+    }
+
+    // ======================== RESPONSE ========================
+
+    public function response($data, string $type = 'json', ?int $code = null)
+    {
+        if ($code !== null) $this->code = $code;
+        http_response_code($this->code);
+
+        match ($type) {
+            'json' => $this->header('Content-Type', 'application/json; charset=utf-8'),
+            'text' => $this->header('Content-Type', 'text/plain; charset=utf-8'),
+            'html' => $this->header('Content-Type', 'text/html; charset=utf-8'),
+            'xml'  => $this->header('Content-Type', 'application/xml; charset=utf-8'),
+            default => null,
+        };
+
+        echo is_string($data) ? $data : json_encode($data, JSON_UNESCAPED_UNICODE);
+        $this->code = 200;
+        return null;
+    }
+
+    public function error(string $msg = 'Not found', int $code = 404)
+    {
+        return $this->response(['error' => true, 'message' => $msg], 'json', $code);
+    }
+
+    public function success($data = null, string $msg = 'Success')
+    {
+        return $this->response(['error' => false, 'message' => $msg, 'data' => $data], 'json');
+    }
+
+    public function raw($content, string $type = 'text/html')
+    {
+        if (!headers_sent()) header('Content-Type: ' . $type . '; charset=utf-8');
+        echo $content;
+        return null;
+    }
+
+    public function redirect(string $url): void { header('Location: ' . $url); exit; }
+    public function status(int $code): self { $this->code = $code; return $this; }
+
+    // ======================== VIEWS ========================
+
+    private function view_path(string $file): string
+    {
+        $resolved = realpath($file);
+        $views = realpath($this->paths['views']);
+        if ($resolved && $views && strpos($resolved, $views) === 0) return $resolved;
+        if (strpos(str_replace('\\', '/', $file), '../') !== false) throw new \Exception("Path traversal blocked");
+        return $file;
+    }
+
+    public function view(string $file, array $data = [], ?int $code = null)
+    {
+        try {
+            if ($code !== null) $this->code = $code;
+            http_response_code($this->code);
+            if (!pathinfo($file, PATHINFO_EXTENSION)) $file .= '.php';
+
+            $path = $file;
+            if (!file_exists($path)) $path = $this->paths['views'] . '/' . ltrim($file, '/');
+            $path = $this->view_path($path);
+
+            if (!file_exists($path)) throw new \Exception("View not found: {$file}");
+
+            extract($data);
+            ob_start();
+            try { include $path; echo ob_get_clean(); $this->code = 200; }
+            catch (\Throwable $e) { ob_end_clean(); throw $e; }
+            return null;
+        } catch (\Throwable $e) {
+            $this->debug(
+                $this->config['debug'] ? $e->getMessage() : 'Error rendering view',
+                500,
+                $this->config['debug'] ? $e->getTraceAsString() : null
+            );
+            return null;
+        }
+    }
+
+    public function partial(string $name, array $data = []): void
+    {
+        if (!pathinfo($name, PATHINFO_EXTENSION)) $name .= '.php';
+        $path = $this->view_path($this->paths['views'] . '/partials/' . ltrim($name, '/'));
+        if (!file_exists($path)) throw new \Exception("Partial not found: {$name}");
+        extract($data);
+        include $path;
+    }
+
+    public function layout(string $view, string $layout = 'default', array $data = [], ?int $code = null)
+    {
+        if ($code !== null) $this->code = $code;
+        ob_start();
+        $this->view($view, $data);
+        $data['content'] = ob_get_clean();
+        return $this->view('layouts/' . $layout, $data, $code);
+    }
+
+    // ======================== REQUEST ========================
+
+    public function param(string $name) { return $this->params[$name] ?? null; }
+    public function params(): array { return $this->params; }
+
+    public function body(?string $key = null)
+    {
+        static $cache = null;
+        if ($cache === null) {
+            $input = file_get_contents('php://input');
+            $type = $this->header('Content-Type');
+            if (strpos($type, 'application/json') !== false) $cache = json_decode($input, true) ?? [];
+            elseif (strpos($type, 'application/x-www-form-urlencoded') !== false) parse_str($input, $cache);
+            else $cache = $input;
+        }
+        if ($key === null) return $cache;
+        return is_array($cache) ? ($cache[$key] ?? null) : null;
+    }
+
+    public function request(?string $key = null, ?string $method = null)
+    {
+        if ($method !== null) {
+            $data = match (strtolower($method)) {
+                'get' => $_GET, 'post' => $_POST, 'body' => $this->body(), default => [],
+            };
+            return $key ? ($data[$key] ?? null) : $data;
+        }
+        $body = $this->body();
+        $data = array_merge($_GET ?? [], $_POST ?? [], is_array($body) ? $body : []);
+        return $key ? ($data[$key] ?? null) : $data;
+    }
+
+    public function header($key = null, $value = null)
+    {
+        if ($key === 'destroy') { header_remove(); return $this; }
+        if ($key === null) return getallheaders();
+        if (is_array($key)) { foreach ($key as $k => $v) $this->header($k, $v); return $this; }
+        if ($value === null) {
+            $headers = getallheaders();
+            $k = str_replace(' ', '-', ucwords(str_replace('-', ' ', $key)));
+            return $headers[$k] ?? null;
+        }
+        if ($value === false) { header_remove($key); return $this; }
+        header("{$key}: {$value}");
+        return $this;
+    }
+
+    // ======================== CORS / SECURITY ========================
+
+    public function cors(): self
+    {
+        if (!($this->config['cors']['on'] ?? false)) return $this;
+        $origin = $_SERVER['HTTP_ORIGIN'] ?? '*';
+        $allowed = $this->config['cors']['origins'] ?? [];
+        if (!empty($allowed) && $allowed !== '*') {
+            if (!in_array($origin, (array)$allowed, true)) $origin = is_array($allowed) ? ($allowed[0] ?? '') : $allowed;
+        }
+        $this->header([
+            'Access-Control-Allow-Origin'  => $origin,
+            'Access-Control-Allow-Methods' => $this->config['cors']['methods'] ?? 'GET, POST, PUT, DELETE, OPTIONS, PATCH',
+            'Access-Control-Allow-Headers' => $this->config['cors']['headers'] ?? 'Content-Type, Authorization, X-Csrf-Token',
+        ]);
+        if ($this->config['cors']['credentials'] ?? false) {
+            $this->header([
+                'Access-Control-Allow-Credentials' => 'true',
+                'Access-Control-Allow-Origin' => $origin === '*' ? ($_SERVER['HTTP_ORIGIN'] ?? '') : $origin,
+            ]);
+        }
+        return $this;
+    }
+
+    private function send_headers(): void
+    {
+        if (headers_sent()) return;
+        foreach ([
+            'X-Content-Type-Options' => 'nosniff',
+            'X-Frame-Options' => 'DENY',
+            'X-XSS-Protection' => '1; mode=block',
+            'Referrer-Policy' => 'strict-origin-when-cross-origin',
+            'X-Permitted-Cross-Domain-Policies' => 'none',
+        ] as $k => $v) header("{$k}: {$v}");
+    }
+
+    // ======================== CSRF ========================
+
+    public function csrf($arg = null)
+    {
+        $this->session(null, null);
+        if ($arg === null) {
+            if (empty($_SESSION['csrf'])) $_SESSION['csrf'] = bin2hex(random_bytes(32));
+            return $_SESSION['csrf'];
+        }
+        if ($arg === true) {
+            return '<input type="hidden" name="csrf" value="' . htmlspecialchars($this->csrf(), ENT_QUOTES, 'UTF-8') . '">';
+        }
+        if (is_string($arg)) {
+            if (empty($_SESSION['csrf'])) return false;
+            return hash_equals($_SESSION['csrf'], $arg);
+        }
+        return false;
+    }
+
+    public function csrf_check($token = null): bool
+    {
+        $this->session(null, null);
+        $token = $token ?? $this->request('csrf') ?? $this->header('X-Csrf-Token');
+        if (empty($_SESSION['csrf']) || empty($token)) return false;
+        return hash_equals($_SESSION['csrf'], $token);
+    }
+
+    // ======================== RATE LIMIT ========================
+
+    private function rate(string $key): void
+    {
+        $max = $this->config['security']['max'] ?? 60;
+        $window = $this->config['security']['window'] ?? 60;
+        $ip = $_SERVER['REMOTE_ADDR'] ?? '127.0.0.1';
+        $file = $this->storage('cache') . '/rate_' . md5($ip . '_' . $key) . '.cache';
+
+        $times = [];
+        if (file_exists($file)) $times = json_decode(file_get_contents($file), true) ?: [];
+        $now = time();
+        $times = array_values(array_filter($times, fn($t) => $t > ($now - $window)));
+        $times[] = $now;
+        file_put_contents($file, json_encode($times), LOCK_EX);
+
+        if (count($times) > $max) {
+            $this->header('Retry-After', $window);
+            $this->response(['error' => true, 'message' => 'Too many requests'], 'json', 429);
+            exit;
+        }
+    }
+
+    // ======================== PASSWORD / TOKEN ========================
+
+    public function hash(string $password): string { return password_hash($password, PASSWORD_BCRYPT, ['cost' => 12]); }
+    public function check(string $password, string $hash): bool { return password_verify($password, $hash); }
+
+    public function token(): ?string
+    {
+        $h = $this->header('Authorization');
+        return ($h && strpos($h, 'Bearer ') === 0) ? substr($h, 7) : null;
+    }
+
+    // ======================== JWT ========================
+
+    /**
+     * JWT: encode or decode/verify.
+     *
+     * $app->jwt(['user' => 1])            → signed token string
+     * $app->jwt(['user' => 1], 7200)      → with custom expire (seconds)
+     * $app->jwt($token)                   → decode + verify, returns payload or null
+     */
+    public function jwt($data, ?int $expire = null)
+    {
+        $secret = $this->config['jwt']['secret'] ?? $this->config['app_key'] ?? 'trindade';
+
+        // Decode / verify
+        if (is_string($data)) {
+            return $this->jwt_decode($data, $secret);
+        }
+
+        // Encode
+        $expire = $expire ?? $this->config['jwt']['expire'] ?? 3600;
+        return $this->jwt_encode($data, $secret, $expire);
+    }
+
+    private function jwt_encode(array $payload, string $secret, int $expire): string
+    {
+        $header = ['alg' => 'HS256', 'typ' => 'JWT'];
+        $payload['iat'] = time();
+        $payload['exp'] = time() + $expire;
+
+        $b64 = fn($d) => rtrim(strtr(base64_encode(json_encode($d)), '+/', '-_'), '=');
+
+        $data = $b64($header) . '.' . $b64($payload);
+        $sig = rtrim(strtr(base64_encode(hash_hmac('sha256', $data, $secret, true)), '+/', '-_'), '=');
+
+        return $data . '.' . $sig;
+    }
+
+    private function jwt_decode(string $token, string $secret): ?array
+    {
+        $parts = explode('.', $token);
+        if (count($parts) !== 3) return null;
+
+        [$h, $p, $sig] = $parts;
+        $b64d = fn($d) => json_decode(base64_decode(strtr($d, '-_', '+/')), true);
+
+        $header = $b64d($h);
+        $payload = $b64d($p);
+        if (!$header || !$payload) return null;
+
+        $data = $h . '.' . $p;
+        $expected = rtrim(strtr(base64_encode(hash_hmac('sha256', $data, $secret, true)), '+/', '-_'), '=');
+
+        if (!hash_equals($expected, $sig)) return null;
+        if (($payload['exp'] ?? 0) < time()) return null;
+
+        return $payload;
+    }
+
+    // ======================== SESSION ========================
+
+    public function session($key = null, $value = null)
+    {
+        if (!session_id()) session_start();
+
+        if ($key === 'destroy') {
+            $_SESSION = [];
+            if (ini_get("session.use_cookies")) {
+                $p = session_get_cookie_params();
+                setcookie(session_name(), '', time() - 42000, $p["path"], $p["domain"], $p["secure"], $p["httponly"]);
+            }
+            session_destroy();
+            return $this;
+        }
+        if ($key === null) return $_SESSION;
+        if (is_array($key)) { foreach ($key as $k => $v) $_SESSION[$k] = $v; return $this; }
+        if ($value === null) return $_SESSION[$key] ?? null;
+        if ($value === false) { unset($_SESSION[$key]); return $this; }
+        $_SESSION[$key] = $value;
+        return $this;
+    }
+
+    public function session_refresh(): self
+    {
+        if (session_id()) session_regenerate_id(true);
+        return $this;
+    }
+
+    public function flash(string $key, $value = null)
+    {
+        if ($value === null) { $v = $this->session($key); $this->session($key, false); return $v; }
+        return $this->session($key, $value);
+    }
+
+    // ======================== COOKIE ========================
+
+    public function cookie($key = null, $value = null, array $opts = [])
+    {
+        if ($key === 'destroy') {
+            foreach ($_COOKIE as $k => $v) {
+                setcookie($k, '', ['expires' => time() - 3600, 'path' => '/']);
+                unset($_COOKIE[$k]);
+            }
+            return $this;
+        }
+        if ($key === null) return $_COOKIE;
+        if (is_array($key)) {
+            foreach ($key as $k => $v) {
+                if (is_array($v) && isset($v['value'])) $this->cookie($k, $v['value'], $v);
+                else $this->cookie($k, $v, $opts);
+            }
+            return $this;
+        }
+        if ($value === null) return $_COOKIE[$key] ?? null;
+        if ($value === false) { setcookie($key, '', ['expires' => time() - 3600, 'path' => '/']); unset($_COOKIE[$key]); return $this; }
+
+        $o = array_merge(['expires' => 0, 'path' => '/', 'domain' => '', 'secure' => true, 'httponly' => true, 'samesite' => 'Lax'], $opts);
+        setcookie($key, $value, $o);
+        $_COOKIE[$key] = $value;
+        return $this;
+    }
+
+    // ======================== CACHE / STORAGE ========================
+
+    public function cache(string $key, $value = null, ?int $ttl = null)
+    {
+        $file = $this->storage('cache') . '/' . md5($key) . '.cache';
+        if ($value === null) {
+            if (!file_exists($file)) return null;
+            $data = json_decode(file_get_contents($file), true);
+            if (($data['expires'] ?? 0) < time()) { unlink($file); return null; }
+            return $data['value'] ?? null;
+        }
+        $ttl = $ttl ?? $this->config['cache']['ttl'] ?? 3600;
+        if (is_dir(dirname($file))) file_put_contents($file, json_encode(['value' => $value, 'expires' => time() + $ttl]), LOCK_EX);
+        return $this;
+    }
+
+    public function clear(string $type = 'cache'): self
+    {
+        $path = $this->storage($type);
+        if (is_dir($path)) foreach (glob($path . '/*') as $f) if (is_file($f)) unlink($f);
+        $this->log("Cleared: {$type}", "info");
+        return $this;
+    }
+
+    public function cleanup(int $max = 86400): self
+    {
+        foreach (['cache', 'temp'] as $type) {
+            $path = $this->storage($type);
+            if (!is_dir($path)) continue;
+            foreach (new \DirectoryIterator($path) as $f) {
+                if ($f->isDot()) continue;
+                if ($f->getMTime() < time() - $max) unlink($f->getPathname());
+            }
+        }
+        return $this;
+    }
+
+    public function storage(string $type = 'root'): string
+    {
+        if ($type === 'root') return dirname($this->paths['storage']['cache']) ?: $this->paths['root'];
+        return $this->paths['storage'][$type] ?? $this->paths['root'];
+    }
+
+    public function move(string $from, string $to, string $type = 'app'): bool
+    {
+        $src = $this->storage($type) . '/' . $from;
+        $dst = $this->storage($type) . '/' . $to;
+        if (!file_exists($src)) return false;
+        if (!is_dir(dirname($dst))) mkdir(dirname($dst), $this->perm['folder'], true);
+        if (rename($src, $dst)) { chmod($dst, is_file($dst) ? $this->perm['public'] : $this->perm['folder']); return true; }
+        return false;
+    }
+
+    // ======================== UPLOAD / DOWNLOAD ========================
+
+    public function upload(string $field, ?string $path = null): string|false
+    {
+        if (!isset($_FILES[$field])) return false;
+        $file = $_FILES[$field];
+        $path = $path ?? $this->storage('uploads');
+
+        $base = realpath($this->storage('uploads'));
+        $dest = realpath($path) ?: $path;
+        if ($base && strpos($dest, $base) !== 0) { $this->log("Upload rejected: bad path", "error"); return false; }
+        if (!is_dir($path)) return false;
+
+        $max = $this->config['upload']['max_size'] ?? 5242880;
+        if ($file['size'] > $max) { $this->log("Upload rejected: too large", "error"); return false; }
+
+        $ext = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
+        $allowed = $this->config['upload']['extensions'] ?? ['jpg', 'jpeg', 'png', 'gif', 'pdf', 'webp'];
+        $blocked = ['php','phtml','php3','php4','php5','php7','php8','phar','pl','py','cgi','asp','aspx','jsp','sh','bash','exe','bat','cmd','dll','so'];
+        if (in_array($ext, $blocked, true)) { $this->log("Upload rejected: .{$ext}", "error"); return false; }
+        if (!empty($allowed) && !in_array($ext, $allowed, true)) { $this->log("Upload rejected: .{$ext} not allowed", "error"); return false; }
+
+        $finfo = finfo_open(FILEINFO_MIME_TYPE);
+        $mime = finfo_file($finfo, $file['tmp_name']);
+        finfo_close($finfo);
+        $types = $this->config['upload']['types'] ?? ['image/jpeg', 'image/png', 'application/pdf'];
+        if (!in_array($mime, $types, true)) { $this->log("Upload rejected: {$mime}", "error"); return false; }
+
+        $name = bin2hex(random_bytes(16)) . '.' . $ext;
+        $full = $path . '/' . $name;
+        if (move_uploaded_file($file['tmp_name'], $full)) { @chmod($full, $this->perm['public']); return $name; }
+        return false;
+    }
+
+    public function download(string $file, ?string $name = null): void
+    {
+        if (strpos(str_replace('\\', '/', $file), '../') !== false) { http_response_code(403); exit; }
+        $path = $file;
+        if (!file_exists($path)) $path = $this->storage('uploads') . '/' . ltrim($file, '/');
+        if (!file_exists($path) || !is_file($path)) { http_response_code(404); exit; }
+
+        $real = realpath($path);
+        $ok = false;
+        foreach ([realpath($this->storage('uploads')), realpath($this->storage('temp'))] as $d) {
+            if ($d && strpos($real, $d) === 0) { $ok = true; break; }
+        }
+        if (!$ok) { http_response_code(403); exit; }
+
+        header('Content-Type: application/octet-stream');
+        header('Content-Disposition: attachment; filename="' . htmlspecialchars($name ?? basename($path), ENT_QUOTES, 'UTF-8') . '"');
+        header('Content-Length: ' . filesize($path));
+        header('Cache-Control: no-cache, no-store, must-revalidate');
+        readfile($path);
+        exit;
+    }
+
+    // ======================== VALIDATE / SANITIZE ========================
+
+    public function validate(array $rules, ?array $data = null)
+    {
+        $data = $data ?? $this->request();
+        $errors = []; $clean = [];
+
+        foreach ($rules as $field => $rule) {
+            $parts = explode('|', $rule);
+            $value = $data[$field] ?? null;
+
+            foreach ($parts as $r) {
+                if ($r === 'required' && ($value === null || $value === '')) { $errors[$field][] = "{$field} is required"; continue; }
+                if ($value === null && $r !== 'required') continue;
+                if (strpos($r, 'min:') === 0) { $min = (int)substr($r, 4); if (is_string($value) && mb_strlen($value) < $min) $errors[$field][] = "{$field} min {$min}"; }
+                if (strpos($r, 'max:') === 0) { $max = (int)substr($r, 4); if (is_string($value) && mb_strlen($value) > $max) $errors[$field][] = "{$field} max {$max}"; }
+                if ($r === 'email' && !filter_var($value, FILTER_VALIDATE_EMAIL)) $errors[$field][] = "{$field} invalid email";
+                if ($r === 'numeric' && !is_numeric($value)) $errors[$field][] = "{$field} must be numeric";
+                if ($r === 'url' && !filter_var($value, FILTER_VALIDATE_URL)) $errors[$field][] = "{$field} invalid URL";
+            }
+            if (!isset($errors[$field]) && isset($data[$field])) $clean[$field] = $this->sanitize($value);
+        }
+        return empty($errors) ? $clean : $this->error(['errors' => $errors], 422);
+    }
+
+    public function sanitize($value)
+    {
+        if (is_array($value)) return array_map([$this, 'sanitize'], $value);
+        if (is_string($value)) return trim(strip_tags($value));
+        return $value;
+    }
+
+    // ======================== LOG / CONFIG / PATH ========================
+
+    public function log(string $msg, string $level = 'info'): self
+    {
+        if (!isset($this->paths['storage']['logs'])) return $this;
+        $file = $this->paths['storage']['logs'] . '/app.log';
+        $clean = str_replace(["\n", "\r"], ' ', $msg);
+        @file_put_contents($file, "[" . date('Y-m-d H:i:s') . "] [{$level}] {$clean}" . PHP_EOL, FILE_APPEND | LOCK_EX);
+        return $this;
+    }
+
+    public function config(?string $key = null) { return $key ? ($this->config[$key] ?? null) : $this->config; }
+
+    public function path(?string $key = null)
+    {
+        if ($key === null) return $this->paths;
+        if (strpos($key, '.') !== false) { [$s, $sub] = explode('.', $key); return $this->paths[$s][$sub] ?? null; }
+        return $this->paths[$key] ?? null;
+    }
+
+    // ======================== LOAD ========================
+
+    public function load(string $type): self
+    {
+        $base = $this->paths[$type] ?? null;
+        if (!$base || !($base = realpath($base)) || !is_dir($base)) return $this;
+        foreach (scandir($base) as $file) {
+            if (pathinfo($file, PATHINFO_EXTENSION) === 'php') {
+                try { $app = $this; require_once $base . DIRECTORY_SEPARATOR . $file; }
+                catch (\Throwable $e) { $this->log("Load fail {$file}: " . $e->getMessage(), "error"); }
+            }
+        }
+        return $this;
+    }
+
+    // ======================== UTILITY ========================
+
+    public function ago(string $date): string
+    {
+        $diff = time() - strtotime($date);
+        if ($diff < 60) return 'just now';
+        foreach (['year' => 31536000, 'month' => 2592000, 'week' => 604800, 'day' => 86400, 'hour' => 3600, 'minute' => 60, 'second' => 1] as $n => $s) {
+            $c = floor($diff / $s);
+            if ($c > 0) return "{$c} {$n}" . ($c > 1 ? 's' : '') . ' ago';
+        }
+        return 'just now';
+    }
+
+    public function random(int $length = 16, string $type = 'alphanumeric'): string
+    {
+        $chars = match ($type) { 'alpha' => 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ', 'numeric' => '0123456789', default => 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789' };
+        $max = strlen($chars) - 1; $out = '';
+        for ($i = 0; $i < $length; $i++) $out .= $chars[random_int(0, $max)];
+        return $out;
+    }
+
+    public function slug(string $text): string { return trim(preg_replace('/-+/', '-', preg_replace('/[^a-z0-9-]/', '-', strtolower($text))), '-'); }
+
+    public function distance(float $lat1, float $lon1, float $lat2, float $lon2, string $unit = 'K'): float
+    {
+        if ($lat1 == $lat2 && $lon1 == $lon2) return 0;
+        $theta = $lon1 - $lon2;
+        $dist = sin(deg2rad($lat1)) * sin(deg2rad($lat2)) + cos(deg2rad($lat1)) * cos(deg2rad($lat2)) * cos(deg2rad($theta));
+        $miles = rad2deg(acos($dist)) * 60 * 1.1515;
+        return round(match (strtoupper($unit)) { 'K' => $miles * 1.609344, 'N' => $miles * 0.8684, default => $miles }, 2);
+    }
+
+    public function clean(string $string, $chars = []): string
+    {
+        if (is_string($chars)) $chars = str_split($chars);
+        if (empty($chars)) $chars = ['!','@','#','$','%','^','&','*','(',')','+','=','{','}','[',']',':',';','"',"'",'<','>','?','/','\\','|','`','~'];
+        return str_replace($chars, '', $string);
+    }
+
+    public function import(string $url, array $options = [])
+    {
+        try {
+            $o = array_merge(['method' => 'GET', 'headers' => [], 'data' => null, 'timeout' => 30, 'ssl' => true, 'json' => true], $options);
+            $ch = curl_init();
+            curl_setopt_array($ch, [CURLOPT_URL => $url, CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => $o['timeout'], CURLOPT_CUSTOMREQUEST => strtoupper($o['method'])]);
+            if (!$o['ssl']) { curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false); curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, false); }
+            if (!empty($o['headers'])) { $h = []; foreach ($o['headers'] as $k => $v) $h[] = "{$k}: {$v}"; curl_setopt($ch, CURLOPT_HTTPHEADER, $h); }
+            if ($o['data']) curl_setopt($ch, CURLOPT_POSTFIELDS, is_array($o['data']) ? http_build_query($o['data']) : $o['data']);
+            $r = curl_exec($ch); $err = curl_error($ch); curl_close($ch);
+            if ($err) throw new \Exception("API error: {$err}");
+            return $o['json'] ? json_decode($r, true) : $r;
+        } catch (\Throwable $e) { $this->log("Import: " . $e->getMessage(), "error"); return ['error' => 'API request failed']; }
+    }
+
+    // ======================== QR CODE ========================
+
+    /**
+     * Generate a QR code PNG image.
+     * Built-in, zero dependencies. Uses GD.
+     *
+     * $app->qr('https://example.com')          → base64 data URI
+     * $app->qr('hello', 300)                   → custom size
+     * $app->qr('data', 200, 'qrcode.png')      → save to file
+     */
+    public function qr(string $data, int $size = 200, ?string $file = null, int $margin = 2): string
+    {
+        $matrix = $this->qr_matrix($data);
+        $img = $this->qr_render($matrix, $size, $margin);
+
+        ob_start();
+        imagepng($img);
+        $png = ob_get_clean();
+        imagedestroy($img);
+
+        if ($file) {
+            file_put_contents($file, $png);
+            return $file;
+        }
+
+        return 'data:image/png;base64,' . base64_encode($png);
+    }
+
+    private function qr_matrix(string $data): array
+    {
+        $bytes = array_map('ord', str_split($data));
+        $len = count($bytes);
+        $v = $len <= 17 ? 1 : ($len <= 32 ? 2 : ($len <= 53 ? 3 : ($len <= 78 ? 4 : ($len <= 106 ? 5 : 6))));
+
+        $ec = [
+            1 => [0 => [26,19,0], 1 => [26,16,0], 2 => [26,13,0], 3 => [26,9,0]],
+            2 => [0 => [44,34,0], 1 => [44,28,0], 2 => [44,22,0], 3 => [44,16,0]],
+            3 => [0 => [70,55,0], 1 => [70,44,0], 2 => [70,34,1], 3 => [70,26,1]],
+            4 => [0 => [100,80,0], 1 => [100,64,0], 2 => [100,48,0], 3 => [100,36,1]],
+            5 => [0 => [134,108,0], 1 => [134,86,0], 2 => [134,62,0], 3 => [134,46,0]],
+            6 => [0 => [172,136,0], 1 => [172,108,0], 2 => [172,76,1], 3 => [172,60,0]],
+        ][$v][1]; // M level (index 1)
+
+        [$total, $data_words, $ec_blocks] = $ec;
+        $size = 17 + $v * 4;
+        $matrix = array_fill(0, $size, array_fill(0, $size, -1));
+
+        // Bit stream: mode(4) + count(8) + data + terminator + pad
+        $bits = '';
+        $bits .= str_pad(decbin(4), 4, '0', STR_PAD_LEFT); // byte mode
+        $bits .= str_pad(decbin($len), 8, '0', STR_PAD_LEFT);
+        foreach ($bytes as $b) $bits .= str_pad(decbin($b), 8, '0', STR_PAD_LEFT);
+        $bits .= '0000'; // terminator
+        while (strlen($bits) % 8 !== 0) $bits .= '0'; // byte align
+        $pad = ['11101100', '00010001']; $pi = 0;
+        while (strlen($bits) < $data_words * 8) { $bits .= $pad[$pi]; $pi = ($pi + 1) % 2; }
+
+        $words = [];
+        for ($i = 0; $i < strlen($bits); $i += 8) $words[] = bindec(substr($bits, $i, 8));
+        $words = array_pad($words, $data_words, 0);
+
+        // Error correction (Reed-Solomon)
+        $ecw = $this->qr_ec($words, $data_words + $ec_blocks);
+        $all = array_merge($words, $ecw);
+
+        // Finder patterns
+        $this->qr_finder($matrix, 0, 0);
+        $this->qr_finder($matrix, $size - 7, 0);
+        $this->qr_finder($matrix, 0, $size - 7);
+
+        // Timing
+        for ($i = 8; $i < $size - 8; $i++) {
+            $matrix[6][$i] = $matrix[$i][6] = ($i % 2 === 0) ? 1 : 0;
+        }
+
+        // Alignment (version >= 2)
+        if ($v >= 2) {
+            $aps = [[6, 6], [6, 18], [18, 6], [18, 18], [6, 22], [22, 6], [22, 22]];
+            $pos = $v >= 2 ? [6, $size - 7 - 2] : [];
+            foreach ($pos as $r) foreach ($pos as $c) {
+                if (($r === 6 && $c === 6) || ($r === 6 && $c === $size - 7) || ($r === $size - 7 && $c === 6)) continue;
+                $this->qr_align($matrix, $r, $c);
+            }
+        }
+
+        // Format info
+        $fmt = 0; // mask 0, M level
+        $fmt = $fmt | (1 << 12); // M = 00 → complement
+        $fmt = $fmt ^ 0x5412; // BCH
+        for ($i = 0; $i < 15; $i++) {
+            $bit = ($fmt >> $i) & 1;
+            if ($i < 6) { $matrix[8][($i < 8 ? $i : 8) < 9 ? ($i < 6 ? $i : $i + 1) : 8 - ($i - 7)] = $bit; }
+        }
+
+        // Data placement
+        $this->qr_place($matrix, $all, $data_words + $ec_blocks);
+
+        // Mask 0: (row + col) % 2 == 0
+        for ($r = 0; $r < $size; $r++) {
+            for ($c = 0; $c < $size; $c++) {
+                if ($matrix[$r][$c] === -1) $matrix[$r][$c] = 0;
+                elseif ($matrix[$r][$c] === 2) $matrix[$r][$c] = (($r + $c) % 2 === 0) ? 0 : 1;
+                elseif ($matrix[$r][$c] === 3) $matrix[$r][$c] = (($r + $c) % 2 === 0) ? 1 : 0;
+            }
+        }
+
+        return $matrix;
+    }
+
+    private function qr_finder(array &$m, int $r, int $c): void
+    {
+        for ($dr = -1; $dr <= 7; $dr++) {
+            for ($dc = -1; $dc <= 7; $dc++) {
+                $pr = $r + $dr; $pc = $c + $dc;
+                if ($pr < 0 || $pc < 0 || $pr >= count($m) || $pc >= count($m[0])) continue;
+                $m[$pr][$pc] = ($dr >= 0 && $dr <= 6 && $dc >= 0 && $dc <= 6)
+                    ? (($dr === 0 || $dr === 6 || $dc === 0 || $dc === 6) ? 1 :
+                      (($dr >= 2 && $dr <= 4 && $dc >= 2 && $dc <= 4) ? 1 : 0))
+                    : 0;
+            }
+        }
+    }
+
+    private function qr_align(array &$m, int $r, int $c): void
+    {
+        for ($dr = -2; $dr <= 2; $dr++) {
+            for ($dc = -2; $dc <= 2; $dc++) {
+                $pr = $r + $dr; $pc = $c + $dc;
+                if ($pr < 0 || $pc < 0 || $pr >= count($m) || $pc >= count($m[0])) continue;
+                $m[$pr][$pc] = ($dr === -2 || $dr === 2 || $dc === -2 || $dc === 2 || ($dr === 0 && $dc === 0)) ? 1 : 0;
+            }
+        }
+    }
+
+    private function qr_place(array &$m, array $data, int $total): void
+    {
+        $size = count($m);
+        $bits = '';
+        for ($i = 0; $i < $total; $i++) {
+            $bits .= str_pad(decbin($data[$i] ?? 0), 8, '0', STR_PAD_LEFT);
+        }
+
+        $c = $size - 1; $r = $size - 1; $up = true; $bi = 0;
+        while ($c > 0) {
+            $cols = $c === 6 ? [5, 4] : [$c, $c - 1];
+            foreach ($cols as $col) {
+                for ($row = $up ? $size - 1 : 0; $up ? ($row >= 0) : ($row < $size); $up ? $row-- : $row++) {
+                    if ($m[$row][$col] === -1 && $bi < strlen($bits)) {
+                        $m[$row][$col] = 2 + (int)($bits[$bi] ?? '0');
+                        $bi++;
+                    }
+                }
+                $up = !$up;
+            }
+            $c -= 2;
+        }
+    }
+
+    private function qr_ec(array $data, int $total): array
+    {
+        $gen = $this->qr_genpoly($total - count($data));
+        $msg = array_pad($data, $total, 0);
+
+        for ($i = 0; $i < count($data); $i++) {
+            if ($msg[$i] === 0) continue;
+            $factor = $this->qr_glog($msg[$i]);
+            for ($j = 0; $j < count($gen); $j++) {
+                $msg[$i + $j] ^= $this->qr_gexp(($gen[$j] + $factor) % 255);
+            }
+        }
+
+        return array_slice($msg, count($data));
+    }
+
+    private function qr_genpoly(int $count): array
+    {
+        $poly = [1];
+        for ($i = 0; $i < $count; $i++) {
+            $poly[] = 0;
+            for ($j = count($poly) - 1; $j > 0; $j--) {
+                $poly[$j] = $poly[$j - 1] ^ $this->qr_gexp(($this->qr_glog($poly[$j]) + $i) % 255);
+            }
+            $poly[0] = $this->qr_gexp(($this->qr_glog($poly[0]) + $i) % 255);
+        }
+        return $poly;
+    }
+
+    private function qr_glog(int $n): int
+    {
+        static $log = null;
+        if ($log === null) {
+            $log = [1 => 0]; $v = 1;
+            for ($i = 1; $i < 255; $i++) { $v = ($v * 2) ^ (($v & 128) ? 0x11d : 0); $log[$v] = $i; }
+        }
+        return $log[$n] ?? 0;
+    }
+
+    private function qr_gexp(int $n): int
+    {
+        static $exp = null;
+        if ($exp === null) {
+            $exp = [0 => 1]; $v = 1;
+            for ($i = 1; $i < 255; $i++) { $v = ($v * 2) ^ (($v & 128) ? 0x11d : 0); $exp[$i] = $v; }
+        }
+        return $exp[$n % 255] ?? 0;
+    }
+
+    private function qr_render(array $matrix, int $size, int $margin): \GdImage
+    {
+        $mod_count = count($matrix);
+        $total = $mod_count + 2 * $margin;
+        $scale = (int)floor($size / $total);
+        $img_size = $total * $scale;
+        $img = imagecreatetruecolor($img_size, $img_size);
+        $white = imagecolorallocate($img, 255, 255, 255);
+        $black = imagecolorallocate($img, 0, 0, 0);
+        imagefill($img, 0, 0, $white);
+
+        for ($r = 0; $r < $mod_count; $r++) {
+            for ($c = 0; $c < $mod_count; $c++) {
+                if (($matrix[$r][$c] ?? 0) === 1) {
+                    imagefilledrectangle($img,
+                        ($c + $margin) * $scale, ($r + $margin) * $scale,
+                        ($c + $margin + 1) * $scale - 1, ($r + $margin + 1) * $scale - 1,
+                        $black);
+                }
+            }
+        }
+
+        return $img;
+    }
+
+    // ======================== DB ========================
+
+    public function db(): ?Database
+    {
+        if ($this->db === null && isset($this->config['db'])) {
+            try { $this->db = new Database($this->config['db']); }
+            catch (\PDOException $e) { $this->log("DB error", "error"); throw new \Exception("Database connection failed"); }
+        }
+        return $this->db;
+    }
+
+    // ======================== DEBUG / DOCS ========================
+
+    public function debug(string $msg, int $code = 500, ?string $details = null): void
+    {
+        if (php_sapi_name() === 'cli') {
+            echo "\n[ERROR] {$msg}\n";
+            if ($details && ($this->config['debug'] ?? false)) echo "{$details}\n";
+            exit($code);
+        }
+        if (!headers_sent()) { http_response_code($code); header('Content-Type: text/html; charset=utf-8'); }
+
+        $show = ($code < 500 || ($this->config['debug'] ?? false))
+            ? htmlspecialchars($msg, ENT_QUOTES, 'UTF-8')
+            : 'An unexpected error occurred. Please try again later.';
+
+        $extra = '';
+        if (($this->config['debug'] ?? false) && $details) {
+            $extra = '<div class="details"><div class="stack">' . htmlspecialchars($details, ENT_QUOTES, 'UTF-8') . '</div></div>';
+        }
+
+        echo '<!DOCTYPE html><html><head><title>Error ' . (int)$code . '</title><style>' . self::CSS . '</style></head><body>'
+           . '<div class="box"><div class="head"><h1 class="title">Error ' . (int)$code . '</h1></div>'
+           . '<div class="body"><div class="msg">' . $show . '</div>' . $extra . '</div></div></body></html>';
+        exit($code);
+    }
+
+    public function docs(?string $path = null): string
+    {
+        $path = $path ?? $this->paths['routes'] ?? dirname(__DIR__) . '/routes';
+        if (!is_dir($path)) return '<h1>No routes found</h1>';
+        $docs = [];
+
+        foreach (glob($path . '/*.php') as $file) {
+            $c = @file_get_contents($file); if (!$c) continue;
+            preg_match_all('/@api\s+(.*?)\s*\*\//s', $c, $m); if (empty($m[1])) continue;
+            foreach ($m[1] as $block) {
+                if (empty($block)) continue;
+                $ep = [];
+                foreach (explode("\n", $block) as $line) {
+                    if (empty($line)) continue;
+                    if (preg_match('/@api\s+{(\w+)}\s+([^\s]+)\s+(.*)/', $line, $x)) $ep = ['method' => $x[1], 'path' => $x[2], 'desc' => $x[3]];
+                    if (preg_match('/@apiParam\s+{([^}]+)}\s+([^\s]+)\s+(.*)/', $line, $x)) { if (!isset($ep['params'])) $ep['params'] = []; $ep['params'][] = ['type' => $x[1], 'name' => $x[2], 'desc' => $x[3]]; }
+                    if (preg_match('/@apiSuccess\s+{([^}]+)}\s+([^\s]+)\s+(.*)/', $line, $x)) { if (!isset($ep['success'])) $ep['success'] = []; $ep['success'][] = ['type' => $x[1], 'name' => $x[2], 'desc' => $x[3]]; }
+                }
+                if (!empty($ep)) $docs[] = $ep;
+            }
+        }
+
+        $h = '<html><head><title>API Docs</title><style>' . self::CSS
+           . '.ep{margin-bottom:2rem}.tag{display:inline-block;padding:3px 8px;border-radius:4px;color:#fff}'
+           . '.tag.get{background:#61affe}.tag.post{background:#49cc90}.tag.put{background:#fca130}.tag.delete{background:#f93e3e}.tag.patch{background:#50e3c2}'
+           . 'table{width:100%;border-collapse:collapse}td,th{padding:8px;border:1px solid #ddd}'
+           . '</style></head><body><div class="box"><div class="body">';
+
+        foreach ($docs as $ep) {
+            $method = htmlspecialchars(strtolower($ep['method']), ENT_QUOTES, 'UTF-8');
+            $h .= '<div class="ep"><h2><span class="tag ' . $method . '">' . strtoupper($method) . '</span> '
+                . htmlspecialchars($ep['path'], ENT_QUOTES, 'UTF-8') . '</h2><p>' . htmlspecialchars($ep['desc'], ENT_QUOTES, 'UTF-8') . '</p>';
+            if (!empty($ep['params'])) {
+                $h .= '<h3>Params</h3><table><tr><th>Name</th><th>Type</th><th>Desc</th></tr>';
+                foreach ($ep['params'] as $p) $h .= '<tr><td>' . htmlspecialchars($p['name'], ENT_QUOTES, 'UTF-8') . '</td><td>' . htmlspecialchars($p['type'], ENT_QUOTES, 'UTF-8') . '</td><td>' . htmlspecialchars($p['desc'], ENT_QUOTES, 'UTF-8') . '</td></tr>';
+                $h .= '</table>';
+            }
+            $h .= '</div>';
+        }
+        return $h . '</div></div></body></html>';
+    }
+
+    // ======================== MAGIC ========================
+
+    public function __call(string $name, array $args)
+    {
+        if (!isset($this->{$name})) throw new \Exception("{$name}() not found");
+        if (!is_callable($this->{$name})) throw new \Exception("{$name} is not callable");
+        return call_user_func_array($this->{$name}, $args);
+    }
+
+    public function __set(string $name, $value): void { $this->{$name} = $value; }
+    public function __get(string $name) { return $this->{$name} ?? null; }
+}

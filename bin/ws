@@ -1,0 +1,30 @@
+#!/usr/bin/env php
+<?php
+
+if (php_sapi_name() !== 'cli') exit('CLI only' . PHP_EOL);
+
+$autoload = dirname(__DIR__) . '/vendor/autoload.php';
+if (!file_exists($autoload)) $autoload = dirname(__DIR__) . '/../../autoload.php';
+if (!file_exists($autoload)) exit('Run composer install first.' . PHP_EOL);
+
+require $autoload;
+
+$cmd = $argv[1] ?? 'start';
+$host = '0.0.0.0';
+$port = 8080;
+
+foreach ($argv as $a) {
+    if (strpos($a, '--host=') === 0) $host = substr($a, 7);
+    if (strpos($a, '--port=') === 0) $port = (int)substr($a, 7);
+}
+
+if ($cmd === 'start') {
+    $ws = new \Trindade\WebSocket(['host' => $host, 'port' => $port]);
+
+    $routes = dirname(__DIR__) . '/routes/ws.php';
+    if (file_exists($routes)) require $routes;
+
+    $ws->start();
+} else {
+    echo "Usage: php bin/ws [start] [--host=0.0.0.0] [--port=8080]\n";
+}
