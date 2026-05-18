@@ -90,7 +90,8 @@ try {
             }
 
             echo "Press Ctrl+C to stop.\n\n";
-            passthru("php -S {$host}:{$port} -t \"{$docroot}\"");
+            $router = dirname(__DIR__) . '/public/router.php';
+            passthru("php -S {$host}:{$port} -t \"" . dirname(__DIR__) . "/public\" \"{$router}\"");
             break;
 
         case 'studio':

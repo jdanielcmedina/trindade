@@ -53,7 +53,7 @@ class Studio
 
     public function login()
     {
-        $dist = $this->app->path('root') . 'public/studio/index.html';
+        $dist = $this->app->path('root') . 'studio-ui/dist/index.html';
         if (file_exists($dist)) return file_get_contents($dist);
         return $this->html_shell('<div class="login-box">
             <h1>Trindade Studio</h1>
@@ -84,7 +84,7 @@ class Studio
     public function asset()
     {
         $uri = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
-        $file = $this->app->path('root') . 'public/studio' . substr($uri, 7); // remove /studio
+        $file = $this->app->path('root') . 'studio-ui/dist' . substr($uri, 7); // remove /studio
         if (file_exists($file)) {
             $ext = pathinfo($file, PATHINFO_EXTENSION);
             $mimes = ['js' => 'application/javascript', 'css' => 'text/css', 'svg' => 'image/svg+xml', 'png' => 'image/png', 'woff2' => 'font/woff2'];
@@ -110,7 +110,7 @@ class Studio
 
     private function react(): string
     {
-        $dist = $this->app->path('root') . 'public/studio/index.html';
+        $dist = $this->app->path('root') . 'studio-ui/dist/index.html';
         if (file_exists($dist)) {
             return file_get_contents($dist);
         }

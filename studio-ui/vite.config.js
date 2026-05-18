@@ -6,7 +6,7 @@ export default defineConfig({
   plugins: [react(), tailwindcss()],
   base: '/studio/',
   build: {
-    outDir: '../public/studio',
+    outDir: 'dist',
     assetsDir: 'assets',
     emptyOutDir: true,
   },
