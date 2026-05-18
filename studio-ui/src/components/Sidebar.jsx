@@ -2,46 +2,88 @@ import { useContext } from 'react'
 import { AppContext } from '../App'
 
 const items = [
-  { id: 'dashboard', label: 'Dashboard', icon: 'M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6' },
-  { id: 'workflow', label: 'Workflows', icon: 'M13 10V3L4 14h7v7l9-11h-7z' },
-  { id: 'routes', label: 'Rotas', icon: 'M7 21a4 4 0 01-4-4V5a2 2 0 012-2h4a2 2 0 012 2v12a4 4 0 01-4 4zm0 0h12a2 2 0 002-2v-4a2 2 0 00-2-2h-2.343M11 7.343l1.657-1.657a2 2 0 012.828 0l2.829 2.829a2 2 0 010 2.828l-8.486 8.485M7 17h.01' },
-  { id: 'database', label: 'Base de Dados', icon: 'M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4m0 5c0 2.21-3.582 4-8 4s-8-1.79-8-4' },
-  { id: 'files', label: 'Ficheiros', icon: 'M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z' },
-  { id: 'console', label: 'Consola', icon: 'M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z' },
-  { id: 'security', label: 'Seguranca', icon: 'M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z' },
-  { id: 'audit', label: 'Auditoria', icon: 'M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01' },
-  { id: 'logs', label: 'Logs', icon: 'M4 6h16M4 10h16M4 14h16M4 18h16' },
+  { id: 'dashboard', label: 'Dashboard', icon: DashIcon },
+  { id: 'workflow', label: 'Workflows', icon: BoltIcon },
+  { id: 'routes', label: 'Rotas', icon: RouteIcon },
+  { id: 'database', label: 'Base de Dados', icon: DBIcon },
+  { id: 'files', label: 'Ficheiros', icon: FileIcon },
+  { id: 'console', label: 'Consola', icon: TerminalIcon },
+  { id: 'security', label: 'Seguranca', icon: LockIcon },
+  { id: 'audit', label: 'Auditoria', icon: AuditIcon },
+  { id: 'logs', label: 'Logs', icon: LogIcon },
 ]
 
 export default function Sidebar({ onLogout }) {
   const { page, setPage } = useContext(AppContext)
 
   return (
-    <nav className="w-56 bg-[#161b22] border-r border-[#30363d] flex flex-col p-3 gap-0.5">
-      <div className="text-sm font-semibold text-[#3b82f6] px-3 py-2 mb-1">
-        Trindade Studio
-      </div>
-      {items.map(i => (
-        <button
-          key={i.id}
-          onClick={() => setPage(i.id)}
-          className={`flex items-center gap-2.5 px-3 py-1.5 rounded-md text-[13px] transition-colors text-left
-            ${page === i.id ? 'bg-[#1f2a45] text-[#3b82f6] font-medium' : 'text-[#8b949e] hover:bg-[#1c2333] hover:text-[#e6edf3]'}`}
-        >
-          <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d={i.icon} />
+    <div className="flex flex-col w-60 border-r border-[var(--border)] bg-[var(--surface)]">
+      <div className="flex items-center gap-2.5 px-5 h-14 border-b border-[var(--border)] shrink-0">
+        <div className="w-6 h-6 rounded-md bg-[var(--accent)] flex items-center justify-center">
+          <svg className="w-3.5 h-3.5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M13 10V3L4 14h7v7l9-11h-7z" />
           </svg>
-          {i.label}
-        </button>
-      ))}
-      <div className="mt-auto pt-3 border-t border-[#30363d]">
+        </div>
+        <span className="text-sm font-semibold tracking-tight">Trindade</span>
+        <span className="text-[11px] text-[var(--text3)] font-medium ml-auto">Studio</span>
+      </div>
+
+      <nav className="flex-1 px-2 py-3 space-y-0.5 overflow-y-auto">
+        {items.map(i => (
+          <button
+            key={i.id}
+            onClick={() => setPage(i.id)}
+            className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-[13px] transition-all duration-150
+              ${page === i.id
+                ? 'bg-[var(--accent-bg)] text-[var(--accent)] font-medium'
+                : 'text-[var(--text2)] hover:text-[var(--text)] hover:bg-[var(--surface2)]'
+              }`}
+          >
+            <i.icon className="w-[18px] h-[18px] shrink-0 opacity-70" />
+            <span className="truncate">{i.label}</span>
+          </button>
+        ))}
+      </nav>
+
+      <div className="px-4 py-3 border-t border-[var(--border)]">
         <button
           onClick={onLogout}
-          className="text-[11px] text-[#8b949e] hover:text-[#da3633] px-3 py-1"
+          className="w-full text-left text-[12px] text-[var(--text3)] hover:text-[var(--red)] transition-colors py-1"
         >
           Terminar sessao
         </button>
       </div>
-    </nav>
+    </div>
   )
+}
+
+function DashIcon({ className }) {
+  return (
+    <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3.75 6A2.25 2.25 0 016 3.75h2.25A2.25 2.25 0 0110.5 6v2.25a2.25 2.25 0 01-2.25 2.25H6a2.25 2.25 0 01-2.25-2.25V6zM3.75 15.75A2.25 2.25 0 016 13.5h2.25a2.25 2.25 0 012.25 2.25V18a2.25 2.25 0 01-2.25 2.25H6A2.25 2.25 0 013.75 18v-2.25zM13.5 6a2.25 2.25 0 012.25-2.25H18A2.25 2.25 0 0120.25 6v2.25A2.25 2.25 0 0118 10.5h-2.25a2.25 2.25 0 01-2.25-2.25V6zM13.5 15.75a2.25 2.25 0 012.25-2.25H18a2.25 2.25 0 012.25 2.25V18A2.25 2.25 0 0118 20.25h-2.25A2.25 2.25 0 0113.5 18v-2.25z" />
+    </svg>)
+}
+function BoltIcon({ className }) {
+  return (<svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3.75 13.5l10.5-11.25L12 10.5h8.25L9.75 21.75 12 13.5H3.75z" /></svg>)
+}
+function RouteIcon({ className }) {
+  return (<svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 21a9.004 9.004 0 008.716-6.747M12 21a9.004 9.004 0 01-8.716-6.747M12 21c2.485 0 4.5-4.03 4.5-9S14.485 3 12 3m0 18c-2.485 0-4.5-4.03-4.5-9S9.515 3 12 3m0 0a8.997 8.997 0 017.843 4.582M12 3a8.997 8.997 0 00-7.843 4.582m15.686 0A11.953 11.953 0 0112 10.5c-2.998 0-5.74-1.1-7.843-2.918m15.686 0A8.959 8.959 0 0121 12c0 .778-.099 1.533-.284 2.253m0 0A17.919 17.919 0 0112 16.5c-3.162 0-6.133-.815-8.716-2.247m0 0A9.015 9.015 0 013 12c0-1.605.42-3.113 1.157-4.418" /></svg>)
+}
+function DBIcon({ className }) {
+  return (<svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M20.25 6.375c0 2.278-3.694 4.125-8.25 4.125S3.75 8.653 3.75 6.375m16.5 0c0-2.278-3.694-4.125-8.25-4.125S3.75 4.097 3.75 6.375m16.5 0v11.25c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125V6.375m16.5 0v3.75c0 2.278-3.694 4.125-8.25 4.125S3.75 12.403 3.75 10.125V6.375" /></svg>)
+}
+function FileIcon({ className }) {
+  return (<svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" /></svg>)
+}
+function TerminalIcon({ className }) {
+  return (<svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M6.75 7.5l3 2.25-3 2.25m4.5 0h3m-9 8.25h13.5A2.25 2.25 0 0021 18V6a2.25 2.25 0 00-2.25-2.25H5.25A2.25 2.25 0 003 6v12a2.25 2.25 0 002.25 2.25z" /></svg>)
+}
+function LockIcon({ className }) {
+  return (<svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z" /></svg>)
+}
+function AuditIcon({ className }) {
+  return (<svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9.75 16.5h4.5M9.75 13.5h4.5" /></svg>)
+}
+function LogIcon({ className }) {
+  return (<svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" /></svg>)
 }

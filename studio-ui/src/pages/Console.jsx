@@ -4,7 +4,7 @@ import { api } from '../lib/api'
 export default function Console() {
   const [method, setMethod] = useState('GET')
   const [url, setUrl] = useState('')
-  const [headers, setHeaders] = useState('{"Content-Type":"application/json"}')
+  const [headers, setHeaders] = useState('{\n  "Content-Type": "application/json"\n}')
   const [body, setBody] = useState('')
   const [result, setResult] = useState(null)
 
@@ -17,22 +17,23 @@ export default function Console() {
 
   return (
     <div>
-      <h2 className="text-base font-semibold mb-4">Consola API</h2>
-      <div className="bg-[#161b22] border border-[#30363d] rounded-lg p-4">
-        <div className="flex gap-2 mb-3">
-          <select value={method} onChange={e => setMethod(e.target.value)} className="bg-[#0d1117] border border-[#30363d] rounded px-2 py-1 text-xs">
-            <option>GET</option><option>POST</option><option>PUT</option><option>DELETE</option><option>PATCH</option>
+      <div className="mb-8"><h1 className="text-lg font-semibold tracking-tight">Consola API</h1></div>
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-5">
+        <div className="flex gap-3 mb-4">
+          <select value={method} onChange={e => setMethod(e.target.value)} className="w-24 bg-[var(--bg)] border border-[var(--border)] rounded-lg px-3 py-2 text-xs font-mono font-medium outline-none focus:border-[var(--accent)]">
+            {['GET', 'POST', 'PUT', 'DELETE', 'PATCH'].map(m => <option key={m}>{m}</option>)}
           </select>
-          <input value={url} onChange={e => setUrl(e.target.value)} placeholder="/api/v1/endpoint" className="flex-1 bg-[#0d1117] border border-[#30363d] rounded px-2 py-1 text-xs" />
+          <input value={url} onChange={e => setUrl(e.target.value)} placeholder="/api/v1/endpoint" className="flex-1 bg-[var(--bg)] border border-[var(--border)] rounded-lg px-3 py-2 text-xs font-mono outline-none focus:border-[var(--accent)] placeholder:text-[var(--text3)]" />
         </div>
-        <textarea value={headers} onChange={e => setHeaders(e.target.value)} rows={2} className="w-full bg-[#0d1117] border border-[#30363d] rounded px-3 py-2 text-xs font-mono mb-2" />
-        <textarea value={body} onChange={e => setBody(e.target.value)} rows={4} placeholder='{"key":"value"}' className="w-full bg-[#0d1117] border border-[#30363d] rounded px-3 py-2 text-xs font-mono mb-2" />
-        <button onClick={send} className="px-3 py-1 text-xs bg-[#3b82f6] hover:bg-[#2563eb] rounded-md">Enviar</button>
+        <textarea value={headers} onChange={e => setHeaders(e.target.value)} rows={3} className="w-full bg-[var(--bg)] border border-[var(--border)] rounded-lg px-4 py-3 text-xs font-mono outline-none focus:border-[var(--accent)] resize-y mb-3" />
+        <textarea value={body} onChange={e => setBody(e.target.value)} rows={5} placeholder='{"key": "value"}'
+          className="w-full bg-[var(--bg)] border border-[var(--border)] rounded-lg px-4 py-3 text-xs font-mono outline-none focus:border-[var(--accent)] resize-y mb-4 placeholder:text-[var(--text3)]" />
+        <button onClick={send} className="px-4 py-2 bg-white text-black text-[13px] font-semibold rounded-lg hover:bg-gray-200 transition-colors">Enviar</button>
       </div>
       {result && (
-        <div className="mt-4 bg-[#161b22] border border-[#30363d] rounded-lg p-4">
-          <h3 className="text-sm font-semibold mb-2">Resposta</h3>
-          <pre className="text-xs font-mono text-[#8b949e] whitespace-pre-wrap">{JSON.stringify(result, null, 2)}</pre>
+        <div className="mt-4 bg-[var(--surface)] border border-[var(--border)] rounded-xl p-5">
+          <h3 className="text-sm font-semibold mb-3">Resposta</h3>
+          <pre className="text-xs font-mono text-[var(--text2)] whitespace-pre-wrap leading-relaxed">{JSON.stringify(result, null, 2)}</pre>
         </div>
       )}
     </div>

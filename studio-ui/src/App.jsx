@@ -1,4 +1,4 @@
-import { useState, createContext, useContext } from 'react'
+import { useState, createContext } from 'react'
 import Login from './pages/Login'
 import Sidebar from './components/Sidebar'
 import Dashboard from './pages/Dashboard'
@@ -32,13 +32,13 @@ export default function App() {
   }
 
   return (
-    <AppContext.Provider value={{ page, setPage }}>
-      <div className="flex h-screen bg-[#0d1117]">
-        <Sidebar onLogout={() => setAuth(false)} />
-        <main className="flex-1 overflow-y-auto p-6">
+    <div className="flex h-screen bg-[var(--bg)] overflow-hidden">
+      <Sidebar onLogout={() => setAuth(false)} />
+      <main className="flex-1 overflow-y-auto">
+        <div className="max-w-5xl mx-auto px-8 py-8">
           {pages[page] || <Dashboard />}
-        </main>
-      </div>
-    </AppContext.Provider>
+        </div>
+      </main>
+    </div>
   )
 }

@@ -1,6 +1,15 @@
 import { useState } from 'react'
 import { api } from '../lib/api'
 
+function Panel({ title, children }) {
+  return (
+    <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-5 hover:border-[var(--border-hover)] transition-colors">
+      <h3 className="text-sm font-semibold mb-4">{title}</h3>
+      {children}
+    </div>
+  )
+}
+
 export default function Security() {
   const [totp, setTotp] = useState(null)
   const [encInput, setEncInput] = useState('')
@@ -15,62 +24,60 @@ export default function Security() {
 
   return (
     <div>
-      <h2 className="text-base font-semibold mb-4">Seguranca</h2>
+      <div className="mb-8"><h1 className="text-lg font-semibold tracking-tight">Seguranca</h1></div>
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
 
-        <div className="bg-[#161b22] border border-[#30363d] rounded-lg p-4">
-          <h3 className="text-sm font-semibold mb-2">Autenticacao 2FA (TOTP)</h3>
-          <button onClick={async () => setTotp(await api.totp())} className="px-3 py-1 text-xs bg-[#3b82f6] hover:bg-[#2563eb] rounded-md mb-2">Gerar Segredo</button>
+        <Panel title="Autenticacao 2FA (TOTP)">
+          <button onClick={async () => setTotp(await api.totp())} className="px-4 py-2 bg-white text-black text-[13px] font-semibold rounded-lg hover:bg-gray-200 transition-colors mb-3">Gerar Segredo</button>
           {totp && (
-            <div className="text-xs space-y-1">
-              <div><span className="text-[#8b949e]">Segredo:</span> <code className="text-[#d29922]">{totp.secret}</code></div>
-              <div><span className="text-[#8b949e]">Codigo:</span> <strong className="text-lg">{totp.code}</strong></div>
+            <div className="space-y-2 text-xs">
+              <div className="flex justify-between py-1.5 border-b border-[var(--border)]"><span className="text-[var(--text3)]">Segredo</span><code className="text-[var(--amber)] font-mono">{totp.secret}</code></div>
+              <div className="flex justify-between py-1.5"><span className="text-[var(--text3)]">Codigo</span><strong className="text-lg font-mono tracking-widest">{totp.code}</strong></div>
             </div>
           )}
-        </div>
+        </Panel>
 
-        <div className="bg-[#161b22] border border-[#30363d] rounded-lg p-4">
-          <h3 className="text-sm font-semibold mb-2">Encriptacao AES-256</h3>
-          <textarea value={encInput} onChange={e => setEncInput(e.target.value)} rows={3} placeholder="Texto para encriptar..." className="w-full bg-[#0d1117] border border-[#30363d] rounded px-3 py-2 text-xs mb-2" />
-          <div className="flex gap-2 mb-2">
-            <button onClick={async () => setEncResult((await api.encrypt(encInput)).result)} className="px-3 py-1 text-xs bg-[#3b82f6] hover:bg-[#2563eb] rounded-md">Encriptar</button>
-            <button onClick={async () => setEncResult((await api.decrypt(encInput)).result)} className="px-3 py-1 text-xs bg-[#161b22] border border-[#30363d] hover:bg-[#21262d] rounded-md">Desencriptar</button>
+        <Panel title="Encriptacao AES-256">
+          <textarea value={encInput} onChange={e => setEncInput(e.target.value)} rows={3} placeholder="Texto para encriptar/desencriptar..."
+            className="w-full bg-[var(--bg)] border border-[var(--border)] rounded-lg px-3 py-2 text-xs font-mono outline-none focus:border-[var(--accent)] resize-y mb-3 placeholder:text-[var(--text3)]" />
+          <div className="flex gap-2 mb-3">
+            <button onClick={async () => setEncResult((await api.encrypt(encInput)).result)} className="px-3 py-1.5 text-[11px] font-medium rounded-lg bg-[var(--accent)] text-white hover:bg-[var(--accent-hover)] transition-colors">Encriptar</button>
+            <button onClick={async () => setEncResult((await api.decrypt(encInput)).result)} className="px-3 py-1.5 text-[11px] rounded-lg bg-[var(--surface2)] border border-[var(--border)] hover:bg-[var(--bg)] transition-colors">Desencriptar</button>
           </div>
-          {encResult && <code className="text-xs break-all text-[#8b949e]">{encResult}</code>}
-        </div>
+          {encResult && <code className="text-[11px] break-all text-[var(--text2)] font-mono">{encResult}</code>}
+        </Panel>
 
-        <div className="bg-[#161b22] border border-[#30363d] rounded-lg p-4">
-          <h3 className="text-sm font-semibold mb-2">Politica de Passwords</h3>
-          <input value={pwd} onChange={async (e) => { setPwd(e.target.value); setPwdResult(await api.policy(e.target.value)) }} placeholder="Testar password..." className="w-full bg-[#0d1117] border border-[#30363d] rounded px-3 py-2 text-xs mb-2" />
+        <Panel title="Politica de Passwords">
+          <input value={pwd} onChange={async (e) => { setPwd(e.target.value); setPwdResult(await api.policy(e.target.value)) }} placeholder="Testar password..."
+            className="w-full bg-[var(--bg)] border border-[var(--border)] rounded-lg px-3 py-2 text-xs outline-none focus:border-[var(--accent)] mb-3 placeholder:text-[var(--text3)]" />
           {pwdResult && (
-            <div className="text-xs">
-              {pwdResult.valid ? <span className="text-[#238636]">Password valida.</span> : pwdResult.errors.map((e, i) => <div key={i} className="text-[#da3633]">{e}</div>)}
+            <div className="text-xs space-y-1">
+              {pwdResult.valid ? <span className="text-[var(--green)] font-medium">Password cumpre a politica.</span> : pwdResult.errors.map((e, i) => <div key={i} className="text-[var(--red)]">{e}</div>)}
             </div>
           )}
-        </div>
+        </Panel>
 
-        <div className="bg-[#161b22] border border-[#30363d] rounded-lg p-4">
-          <h3 className="text-sm font-semibold mb-2">Backups</h3>
-          <div className="flex gap-2 mb-2">
-            <select value={backupType} onChange={e => setBackupType(e.target.value)} className="bg-[#0d1117] border border-[#30363d] rounded px-2 py-1 text-xs">
+        <Panel title="Backups">
+          <div className="flex gap-2 mb-3">
+            <select value={backupType} onChange={e => setBackupType(e.target.value)} className="bg-[var(--bg)] border border-[var(--border)] rounded-lg px-3 py-2 text-xs outline-none focus:border-[var(--accent)]">
               <option value="full">Completo</option><option value="db">Base de dados</option><option value="files">Ficheiros</option>
             </select>
-            <button onClick={async () => { const r = await api.backup(backupType); setBackupResult(r.ok ? `Criado: ${r.file}` : 'Falhou') }} className="px-3 py-1 text-xs bg-[#3b82f6] hover:bg-[#2563eb] rounded-md">Criar Backup</button>
+            <button onClick={async () => { const r = await api.backup(backupType); setBackupResult(r.ok ? `Criado: ${r.file}` : 'Falhou') }} className="px-3 py-1.5 text-[11px] font-medium rounded-lg bg-[var(--accent)] text-white hover:bg-[var(--accent-hover)] transition-colors">Criar</button>
           </div>
-          {backupResult && <p className="text-xs">{backupResult}</p>}
-        </div>
+          {backupResult && <p className="text-xs text-[var(--text2)]">{backupResult}</p>}
+        </Panel>
 
-        <div className="bg-[#161b22] border border-[#30363d] rounded-lg p-4">
-          <h3 className="text-sm font-semibold mb-2">Alerta de Incidente</h3>
-          <div className="flex gap-2 mb-2">
-            <select value={alertLevel} onChange={e => setAlertLevel(e.target.value)} className="bg-[#0d1117] border border-[#30363d] rounded px-2 py-1 text-xs">
+        <Panel title="Alerta de Incidente">
+          <div className="flex gap-2 mb-3">
+            <select value={alertLevel} onChange={e => setAlertLevel(e.target.value)} className="bg-[var(--bg)] border border-[var(--border)] rounded-lg px-3 py-2 text-xs outline-none focus:border-[var(--accent)]">
               <option>info</option><option>warning</option><option>critical</option>
             </select>
-            <input value={alertMsg} onChange={e => setAlertMsg(e.target.value)} placeholder="Mensagem..." className="flex-1 bg-[#0d1117] border border-[#30363d] rounded px-3 py-2 text-xs" />
+            <input value={alertMsg} onChange={e => setAlertMsg(e.target.value)} placeholder="Mensagem..." className="flex-1 bg-[var(--bg)] border border-[var(--border)] rounded-lg px-3 py-2 text-xs outline-none focus:border-[var(--accent)] placeholder:text-[var(--text3)]" />
           </div>
-          <button onClick={async () => { await api.alert(alertLevel, alertMsg); setAlertResult('Enviado') }} className="px-3 py-1 text-xs bg-[#da3633]/80 hover:bg-[#da3633] rounded-md">Enviar Alerta</button>
-          {alertResult && <p className="text-xs mt-1 text-[#238636]">{alertResult}</p>}
-        </div>
+          <button onClick={async () => { await api.alert(alertLevel, alertMsg); setAlertResult('Enviado.') }} className="px-3 py-1.5 text-[11px] font-medium rounded-lg bg-[var(--red)] text-white hover:opacity-90 transition-opacity">Enviar Alerta</button>
+          {alertResult && <p className="text-xs text-[var(--green)] mt-2">{alertResult}</p>}
+        </Panel>
+
       </div>
     </div>
   )
