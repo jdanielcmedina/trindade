@@ -1,6 +1,7 @@
 /vendor/
 /storage/
 /node_modules/
+/public/studio/
 .env
 .env.backup
 composer.lock

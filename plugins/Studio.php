@@ -11,6 +11,7 @@ class Studio
 
         // Register studio routes under /studio
         $app->group('/studio', function () use ($app) {
+            $app->on('GET /assets/*', [$this, 'asset']);
             $app->on('GET /', [$this, 'index']);
             $app->on('GET /login', [$this, 'login']);
             $app->on('POST /login', [$this, 'do_login']);
@@ -52,6 +53,8 @@ class Studio
 
     public function login()
     {
+        $dist = $this->app->path('root') . 'public/studio/index.html';
+        if (file_exists($dist)) return file_get_contents($dist);
         return $this->html_shell('<div class="login-box">
             <h1>Trindade Studio</h1>
             <form method="post" action="/studio/login">
@@ -78,9 +81,39 @@ class Studio
         $this->app->redirect('/studio/login');
     }
 
+    public function asset()
+    {
+        $uri = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
+        $file = $this->app->path('root') . 'public/studio' . substr($uri, 7); // remove /studio
+        if (file_exists($file)) {
+            $ext = pathinfo($file, PATHINFO_EXTENSION);
+            $mimes = ['js' => 'application/javascript', 'css' => 'text/css', 'svg' => 'image/svg+xml', 'png' => 'image/png', 'woff2' => 'font/woff2'];
+            header('Content-Type: ' . ($mimes[$ext] ?? 'application/octet-stream'));
+            header('Cache-Control: public, max-age=31536000');
+            readfile($file);
+            exit;
+        }
+        http_response_code(404);
+        exit;
+    }
+
     public function index()
     {
+        $uri = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
+        // Serve static assets from React build
+        if (str_starts_with($uri, '/studio/assets/')) {
+            return $this->asset();
+        }
         if (!$this->auth()) return $this->app->redirect('/studio/login');
+        return $this->react();
+    }
+
+    private function react(): string
+    {
+        $dist = $this->app->path('root') . 'public/studio/index.html';
+        if (file_exists($dist)) {
+            return file_get_contents($dist);
+        }
         return $this->html();
     }
 
