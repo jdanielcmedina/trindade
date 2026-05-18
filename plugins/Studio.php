@@ -30,6 +30,16 @@ class Studio
             $app->on('GET /api/logs', [$this, 'api_logs']);
             $app->on('POST /api/request', [$this, 'api_request']);
             $app->on('GET /api/export', [$this, 'api_export']);
+
+            // NIS2
+            $app->on('GET /api/nis2', [$this, 'api_nis2']);
+            $app->on('GET /api/nis2/totp', [$this, 'api_nis2_totp']);
+            $app->on('POST /api/nis2/encrypt', [$this, 'api_nis2_encrypt']);
+            $app->on('POST /api/nis2/decrypt', [$this, 'api_nis2_decrypt']);
+            $app->on('POST /api/nis2/policy', [$this, 'api_nis2_policy']);
+            $app->on('POST /api/nis2/backup', [$this, 'api_nis2_backup']);
+            $app->on('GET /api/nis2/audit', [$this, 'api_nis2_audit']);
+            $app->on('POST /api/nis2/alert', [$this, 'api_nis2_alert']);
         });
     }
 
@@ -85,6 +95,7 @@ class Studio
         <a class="nav-item" data-page="files" onclick="nav(this,\'files\')">📁 Files</a>
         <a class="nav-item" data-page="console" onclick="nav(this,\'console\')">📡 API Console</a>
         <a class="nav-item" data-page="logs" onclick="nav(this,\'logs\')">📋 Logs</a>
+        <a class="nav-item" data-page="nis2" onclick="nav(this,\'nis2\')">🛡 NIS2</a>
         <div class="nav-footer"><a href="/studio/logout" style="color:#999">Logout</a></div>
     </nav>
     <main id="main"></main>
@@ -110,6 +121,7 @@ async function load(page) {
         case "files": m.innerHTML = await files_page(); break;
         case "console": m.innerHTML = console_page(); break;
         case "logs": m.innerHTML = await logs_page(); break;
+        case "nis2": m.innerHTML = await nis2_page(); break;
     }
 }
 
@@ -258,9 +270,114 @@ async function logs_page() {
     return `<h2>Logs</h2><pre class="log-viewer">${escape_html(logs)}</pre>`;
 }
 
+async function nis2_page() {
+    const stats = await api("/nis2");
+    return `<h2>🛡 NIS2 Compliance</h2>
+    <div class="cards" style="margin-bottom:1rem">
+        <div class="card"><h3>Audit Events</h3><p>${stats.audit_count}</p></div>
+        <div class="card"><h3>Lockouts</h3><p>${stats.lockouts}</p></div>
+        <div class="card"><h3>Backups</h3><p>${stats.backups}</p></div>
+        <div class="card"><h3>Alerts</h3><p>${stats.alerts}</p></div>
+    </div>
+    <div class="nis2-grid">
+        <div class="nis2-panel">
+            <h3>🔐 TOTP / 2FA</h3>
+            <button class="btn" onclick="totp_gen()">Generate Secret</button>
+            <div id="totp-result" style="margin-top:.5rem"></div>
+        </div>
+        <div class="nis2-panel">
+            <h3>🔒 Encrypt / Decrypt</h3>
+            <textarea id="enc-input" rows="3" placeholder="Data to encrypt or decrypt..."></textarea>
+            <button class="btn" onclick="encrypt_data()">Encrypt</button>
+            <button class="btn" onclick="decrypt_data()">Decrypt</button>
+            <div id="enc-result" style="margin-top:.5rem;word-break:break-all"></div>
+        </div>
+        <div class="nis2-panel">
+            <h3>🔑 Password Policy</h3>
+            <input id="pwd-test" placeholder="Test a password..." onkeyup="test_pwd()">
+            <div id="pwd-result" style="margin-top:.5rem"></div>
+        </div>
+        <div class="nis2-panel">
+            <h3>📦 Backup</h3>
+            <select id="backup-type"><option value="full">Full</option><option value="db">Database only</option><option value="files">Files only</option></select>
+            <button class="btn" onclick="run_backup()">Create Backup</button>
+            <div id="backup-result" style="margin-top:.5rem"></div>
+        </div>
+        <div class="nis2-panel">
+            <h3>📝 Audit Trail</h3>
+            <pre class="log-viewer" style="max-height:300px" id="audit-log">Loading...</pre>
+            <button class="btn" onclick="load_audit()">Refresh</button>
+        </div>
+        <div class="nis2-panel">
+            <h3>🚨 Alert Test</h3>
+            <select id="alert-level"><option>info</option><option>warning</option><option>critical</option></select>
+            <input id="alert-msg" placeholder="Alert message...">
+            <button class="btn" onclick="send_alert()">Send Alert</button>
+            <div id="alert-result" style="margin-top:.5rem"></div>
+        </div>
+    </div>`;
+}
+
+async function totp_gen() {
+    const r = await api("/nis2/totp");
+    document.getElementById("totp-result").innerHTML = `
+        <p><b>Secret:</b> <code>${r.secret}</code></p>
+        <p><b>Current code:</b> <code style="font-size:20px">${r.code}</code></p>
+        <p style="color:#888;font-size:12px">Use this secret in Google Authenticator. Code refreshes every 30s.</p>`;
+}
+
+async function encrypt_data() {
+    const v = document.getElementById("enc-input").value;
+    if (!v) return;
+    const r = await api("/nis2/encrypt", {method:"POST", body:JSON.stringify({data:v})});
+    document.getElementById("enc-result").innerHTML = `<code>${escape_html(r.result)}</code>`;
+}
+
+async function decrypt_data() {
+    const v = document.getElementById("enc-input").value;
+    if (!v) return;
+    const r = await api("/nis2/decrypt", {method:"POST", body:JSON.stringify({data:v})});
+    document.getElementById("enc-result").innerHTML = `<code>${escape_html(r.result)}</code>`;
+}
+
+async function test_pwd() {
+    const v = document.getElementById("pwd-test").value;
+    const r = await api("/nis2/policy", {method:"POST", body:JSON.stringify({password:v})});
+    const d = document.getElementById("pwd-result");
+    if (r.valid) d.innerHTML = \'<span style="color:#49cc90">✔ Password meets policy</span>\';
+    else d.innerHTML = r.errors.map(e => `<div style="color:#f93e3e">✘ ${e}</div>`).join("");
+}
+
+async function run_backup() {
+    document.getElementById("backup-result").innerHTML = "Running...";
+    const t = document.getElementById("backup-type").value;
+    const r = await api("/nis2/backup", {method:"POST", body:JSON.stringify({type:t})});
+    document.getElementById("backup-result").innerHTML = r.ok
+        ? `<span style="color:#49cc90">✔ Backup created: ${r.file}</span>`
+        : `<span style="color:#f93e3e">✘ Failed</span>`;
+}
+
+async function load_audit() {
+    const r = await api("/nis2/audit");
+    document.getElementById("audit-log").innerHTML = r.entries.map(e =>
+        `<div>[${e.ts}] <b>${e.action}</b> ${e.ip} ${e.user||""}</div>`
+    ).join("\\n") || "No audit events yet.";
+    load_audit.ts = Date.now();
+}
+
+async function send_alert() {
+    const level = document.getElementById("alert-level").value;
+    const msg = document.getElementById("alert-msg").value;
+    const r = await api("/nis2/alert", {method:"POST", body:JSON.stringify({level,msg})});
+    document.getElementById("alert-result").innerHTML = r.ok
+        ? "\x3Cspan style=\x22color:#49cc90\x22\x3E✔ Alert sent\x3C/span\x3E"
+        : "\x3Cspan style=\x22color:#f93e3e\x22\x3E✘ Failed\x3C/span\x3E";
+}
+
 function escape_html(s) { return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
 
 load("dashboard");
+load_audit();
 </script>');
     }
 
@@ -308,6 +425,8 @@ load("dashboard");
         .login-box input{margin:.5rem 0}
         .login-box button{width:100%;margin-top:.5rem}
         .error{color:#f93e3e}
+        .nis2-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:1rem}
+        .nis2-panel{background:#1a1a1a;padding:1rem;border-radius:8px;border:1px solid #333}
         ';
 
         $head = $full ? '<a href="/studio/logout" style="position:fixed;top:1rem;right:1rem;color:#666;font-size:13px;z-index:99">Logout</a>' : '';
@@ -523,6 +642,78 @@ load("dashboard");
         header('Content-Disposition: attachment; filename="routes_export.php"');
         header('Content-Type: text/plain');
         echo $export;
+    }
+
+    public function api_nis2()
+    {
+        $this->check();
+        $audit = $this->app->audit_log(1000);
+        $cache = $this->app->storage('cache');
+        $lockouts = 0;
+        foreach (glob($cache . '/lockout_*.cache') as $f) $lockouts++;
+        $backups = count(glob(($this->app->storage('backups') ?: $this->app->storage('cache')) . '/backup-*.zip'));
+        echo json_encode([
+            'audit_count' => count($audit),
+            'lockouts'    => $lockouts,
+            'backups'     => $backups,
+            'alerts'      => count(array_filter($audit, fn($e) => str_starts_with($e['action'] ?? '', 'alert.'))),
+        ]);
+    }
+
+    public function api_nis2_totp()
+    {
+        $this->check();
+        $secret = $this->app->totp();
+        $code = $this->app->totp($secret);
+        echo json_encode(['secret' => $secret, 'code' => $code]);
+    }
+
+    public function api_nis2_encrypt()
+    {
+        $this->check();
+        $data = json_decode(file_get_contents('php://input'), true);
+        $result = $this->app->encrypt($data['data'] ?? '');
+        echo json_encode(['result' => $result]);
+    }
+
+    public function api_nis2_decrypt()
+    {
+        $this->check();
+        $data = json_decode(file_get_contents('php://input'), true);
+        $result = $this->app->decrypt($data['data'] ?? '');
+        echo json_encode(['result' => $result ?? 'Decryption failed']);
+    }
+
+    public function api_nis2_policy()
+    {
+        $this->check();
+        $data = json_decode(file_get_contents('php://input'), true);
+        $errors = $this->app->password_policy($data['password'] ?? '');
+        echo json_encode(['valid' => empty($errors), 'errors' => $errors]);
+    }
+
+    public function api_nis2_backup()
+    {
+        $this->check();
+        $data = json_decode(file_get_contents('php://input'), true);
+        $type = $data['type'] ?? 'full';
+        $file = $this->app->backup($type);
+        echo json_encode(['ok' => $file !== false, 'file' => $file ? basename($file) : '']);
+    }
+
+    public function api_nis2_audit()
+    {
+        $this->check();
+        $entries = $this->app->audit_log();
+        echo json_encode(['entries' => $entries]);
+    }
+
+    public function api_nis2_alert()
+    {
+        $this->check();
+        $data = json_decode(file_get_contents('php://input'), true);
+        $this->app->alert($data['level'] ?? 'info', $data['msg'] ?? 'Studio test alert');
+        echo json_encode(['ok' => true]);
     }
 
     private function dir_size(string $dir): int

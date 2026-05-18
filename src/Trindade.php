@@ -694,6 +694,7 @@ class Trindade
     private array $params = [];
     private array $notfound = [];
     private array $middleware = [];
+    private array $plugins = [];
     private $fallback = null;
     private int $code = 200;
 
@@ -717,7 +718,8 @@ class Trindade
     public function __construct(array $config = [], ?array $database = null)
     {
         try {
-            $root = dirname(getcwd()) . DIRECTORY_SEPARATOR;
+            $root = rtrim($config['root'] ?? dirname(getcwd()), '/\\') . DIRECTORY_SEPARATOR;
+            unset($config['root']);
 
             $this->paths = [
                 'root'    => $root,
@@ -729,6 +731,7 @@ class Trindade
                     'logs'    => $root . 'storage/logs',
                     'uploads' => $root . 'storage/uploads',
                     'temp'    => $root . 'storage/temp',
+                    'backups' => $root . 'storage/backups',
                 ],
             ];
 
@@ -802,7 +805,7 @@ class Trindade
                 try { $this->db = new Database($this->config['db']); }
                 catch (\PDOException $e) {
                     $this->log("DB error", "error");
-                    throw new \Exception("Database connection failed");
+                    $this->db = null;
                 }
             }
 
@@ -837,7 +840,7 @@ class Trindade
             $class = 'Trindade\\Plugins\\' . $file->getBasename('.php');
             if (class_exists($class)) {
                 $name = strtolower($file->getBasename('.php'));
-                $this->{$name} = new $class($this);
+                $this->plugins[$name] = new $class($this);
                 $this->log("Plugin: {$name}", "debug");
             }
         }
@@ -855,7 +858,9 @@ class Trindade
         if ($this->group) $full = rtrim($this->group, '/') . '/' . ltrim($path, '/');
         $full = $full === '/' ? '/' : rtrim($full, '/');
 
-        $fn = \Closure::bind($handler, $this, static::class);
+        $fn = $handler instanceof \Closure
+            ? \Closure::bind($handler, $this, static::class)
+            : $handler;
         foreach ($methods as $m) {
             $this->routes[$m][$full] = ['fn' => $fn, 'vhost' => $this->vhost];
         }
@@ -1171,6 +1176,9 @@ class Trindade
             'Referrer-Policy' => 'strict-origin-when-cross-origin',
             'X-Permitted-Cross-Domain-Policies' => 'none',
         ] as $k => $v) header("{$k}: {$v}");
+
+        $csp = $this->config['csp'] ?? null;
+        if ($csp) header("Content-Security-Policy: {$csp}");
     }
 
     // ======================== CSRF ========================
@@ -1817,13 +1825,405 @@ class Trindade
         return $img;
     }
 
+    // ======================== NIS2 COMPLIANCE ========================
+
+    /**
+     * Audit trail — immutable log of sensitive actions.
+     *
+     * $app->audit('user.login', ['user' => 1, 'ip' => $_SERVER['REMOTE_ADDR']])
+     * $app->audit('data.export', ['user' => 1, 'records' => 42])
+     */
+    public function audit(string $action, array $data = []): self
+    {
+        $file = ($this->paths['storage']['logs'] ?? '/tmp') . '/audit.log';
+        $entry = [
+            'ts'     => date('c'),
+            'action' => $action,
+            'ip'     => $_SERVER['REMOTE_ADDR'] ?? 'cli',
+            'user'   => $this->session('user_id'),
+            'data'   => $data,
+        ];
+        @file_put_contents($file, json_encode($entry) . "\n", FILE_APPEND | LOCK_EX);
+        return $this;
+    }
+
+    /**
+     * Read audit log (for Studio/admin).
+     */
+    public function audit_log(int $lines = 100): array
+    {
+        $file = ($this->paths['storage']['logs'] ?? '/tmp') . '/audit.log';
+        if (!file_exists($file)) return [];
+        $all = file($file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+        $all = array_slice($all, -$lines);
+        return array_map(fn($l) => json_decode($l, true), $all);
+    }
+
+    /**
+     * TOTP — Time-based One-Time Password (RFC 6238).
+     *
+     * $secret = $app->totp()               → generate new secret (base32)
+     * $code   = $app->totp($secret)        → current 6-digit code
+     * $valid  = $app->totp($secret, $code) → verify code
+     */
+    public function totp($secret = null, $code = null)
+    {
+        if ($secret === null) {
+            return $this->totp_secret();
+        }
+
+        if ($code === null) {
+            return $this->totp_code($secret);
+        }
+
+        return hash_equals((string)$this->totp_code($secret), (string)$code);
+    }
+
+    private function totp_secret(): string
+    {
+        $chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+        $out = '';
+        for ($i = 0; $i < 16; $i++) $out .= $chars[random_int(0, 31)];
+        return $out;
+    }
+
+    private function totp_code(string $secret, int $window = 30, int $digits = 6): int
+    {
+        $counter = (int)floor(time() / $window);
+        $secret = $this->totp_base32_decode($secret);
+        $counter = pack('J', $counter);
+        $hash = hash_hmac('sha1', $counter, $secret, true);
+        $offset = ord($hash[strlen($hash) - 1]) & 0x0F;
+        $value = unpack('N', substr($hash, $offset, 4))[1] & 0x7FFFFFFF;
+        return $value % (10 ** $digits);
+    }
+
+    private function totp_base32_decode(string $s): string
+    {
+        static $alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+        $s = strtoupper(str_replace(' ', '', $s));
+        $buffer = 0; $bits = 0; $out = '';
+        for ($i = 0; $i < strlen($s); $i++) {
+            $val = strpos($alphabet, $s[$i]);
+            if ($val === false) continue;
+            $buffer = ($buffer << 5) | $val;
+            $bits += 5;
+            if ($bits >= 8) {
+                $bits -= 8;
+                $out .= chr(($buffer >> $bits) & 0xFF);
+            }
+        }
+        return $out;
+    }
+
+    /**
+     * Encrypt / decrypt data with AES-256-GCM.
+     *
+     * $cipher = $app->encrypt('sensitive data')
+     * $text   = $app->decrypt($cipher)
+     *
+     * Key: config 'app_key' or auto-generated.
+     */
+    public function encrypt(string $data): string
+    {
+        $key = $this->nis2_key();
+        $iv = random_bytes(12);
+        $tag = '';
+        $encrypted = openssl_encrypt($data, 'aes-256-gcm', $key, OPENSSL_RAW_DATA, $iv, $tag);
+        return base64_encode($iv . $tag . $encrypted);
+    }
+
+    public function decrypt(string $data): ?string
+    {
+        $key = $this->nis2_key();
+        $raw = base64_decode($data);
+        if (strlen($raw) < 28) return null; // iv(12) + tag(16) min
+        $iv = substr($raw, 0, 12);
+        $tag = substr($raw, 12, 16);
+        $encrypted = substr($raw, 28);
+        $result = openssl_decrypt($encrypted, 'aes-256-gcm', $key, OPENSSL_RAW_DATA, $iv, $tag);
+        return $result !== false ? $result : null;
+    }
+
+    /**
+     * Derive encryption key from app_key.
+     */
+    private function nis2_key(): string
+    {
+        $raw = $this->config['app_key'] ?? 'trindade-fallback-key-do-not-use-in-production';
+        if (strpos($raw, 'base64:') === 0) $raw = base64_decode(substr($raw, 7));
+        return hash('sha256', $raw, true);
+    }
+
+    /**
+     * Password policy check.
+     *
+     * $errors = $app->password_policy('myPassword123!')
+     * Returns [] if valid, or array of error messages.
+     */
+    public function password_policy(string $password, array $rules = []): array
+    {
+        $rules = array_merge([
+            'min'      => 8,
+            'max'      => 128,
+            'upper'    => true,
+            'lower'    => true,
+            'number'   => true,
+            'special'  => true,
+            'history'  => 0,      // number of previous hashes to check
+        ], $rules);
+
+        $errors = [];
+
+        if (strlen($password) < $rules['min']) $errors[] = "At least {$rules['min']} characters";
+        if (strlen($password) > $rules['max']) $errors[] = "Maximum {$rules['max']} characters";
+        if ($rules['upper'] && !preg_match('/[A-Z]/', $password)) $errors[] = "At least one uppercase letter";
+        if ($rules['lower'] && !preg_match('/[a-z]/', $password)) $errors[] = "At least one lowercase letter";
+        if ($rules['number'] && !preg_match('/[0-9]/', $password)) $errors[] = "At least one number";
+        if ($rules['special'] && !preg_match('/[^a-zA-Z0-9]/', $password)) $errors[] = "At least one special character";
+
+        // Check against password history
+        if ($rules['history'] > 0) {
+            $history = $this->session('pwd_history') ?: [];
+            foreach ($history as $old) {
+                if (password_verify($password, $old)) {
+                    $errors[] = "Password already used recently";
+                    break;
+                }
+            }
+        }
+
+        return $errors;
+    }
+
+    /**
+     * Record password in history after successful change.
+     */
+    public function password_history(string $hash, int $keep = 5): self
+    {
+        $history = $this->session('pwd_history') ?: [];
+        array_unshift($history, $hash);
+        $this->session('pwd_history', array_slice($history, 0, $keep));
+        $this->audit('password.change');
+        return $this;
+    }
+
+    /**
+     * Account lockout — track failed attempts.
+     *
+     * $app->lockout('user@email.com')          → record failure, returns attempts count
+     * $app->lockout('user@email.com', true)     → reset on success
+     */
+    public function lockout(string $identifier, bool $reset = false): int
+    {
+        $file = $this->storage('cache') . '/lockout_' . md5($identifier) . '.cache';
+
+        if ($reset) {
+            if (file_exists($file)) unlink($file);
+            return 0;
+        }
+
+        $data = [];
+        if (file_exists($file)) $data = json_decode(file_get_contents($file), true) ?: [];
+
+        $max = $this->config['security']['lockout_max'] ?? 5;
+        $window = $this->config['security']['lockout_window'] ?? 900; // 15 min
+
+        $now = time();
+        $data = array_values(array_filter($data, fn($t) => $t > ($now - $window)));
+        $data[] = $now;
+        file_put_contents($file, json_encode($data), LOCK_EX);
+
+        if (count($data) >= $max) {
+            $this->audit('account.lockout', ['identifier' => hash('sha256', $identifier)]);
+        }
+
+        return count($data);
+    }
+
+    /**
+     * Content Security Policy headers.
+     *
+     * $app->csp("default-src 'self'; script-src 'self'")
+     * $app->csp()  → default strict policy
+     */
+    public function csp(?string $policy = null): self
+    {
+        if ($policy === null) {
+            $policy = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+                    . "img-src 'self' data:; font-src 'self'; connect-src 'self'; "
+                    . "frame-ancestors 'none'; base-uri 'self'; form-action 'self'";
+        }
+
+        header("Content-Security-Policy: {$policy}");
+        header("X-Content-Security-Policy: {$policy}"); // legacy
+        return $this;
+    }
+
+    /**
+     * Backup — dump database or files.
+     *
+     * $app->backup()              → full backup to storage/backups/
+     * $app->backup('db')          → database only
+     * $app->backup('files')       → routes + views + helpers only
+     */
+    public function backup(string $type = 'full'): string|false
+    {
+        $dir = $this->storage('backups');
+        if (!is_dir($dir)) mkdir($dir, 0755, true);
+
+        $ts = date('Ymd-His');
+        $zipFile = $dir . "/backup-{$ts}.zip";
+        $zip = new \ZipArchive();
+
+        if ($zip->open($zipFile, \ZipArchive::CREATE) !== true) {
+            $this->log("Backup failed: cannot create zip", "error");
+            return false;
+        }
+
+        // DB dump
+        if ($type === 'full' || $type === 'db') {
+            if ($this->db) {
+                try {
+                    $sql = $this->db_dump();
+                    $zip->addFromString('database.sql', $sql);
+                } catch (\Throwable $e) {
+                    $this->log("Backup: DB dump failed - " . $e->getMessage(), "error");
+                }
+            }
+        }
+
+        // Files
+        if ($type === 'full' || $type === 'files') {
+            foreach (['routes', 'views', 'helpers', 'plugins'] as $d) {
+                $p = $this->path($d);
+                if (!$p || !is_dir($p)) continue;
+                $this->zip_add($zip, $p, $d . '/');
+            }
+        }
+
+        $zip->close();
+
+        if (file_exists($zipFile)) {
+            $this->audit('backup.create', ['type' => $type, 'size' => filesize($zipFile)]);
+            $this->log("Backup created: {$zipFile}", "info");
+            return $zipFile;
+        }
+
+        return false;
+    }
+
+    private function db_dump(): string
+    {
+        $sql = "-- Trindade Backup " . date('Y-m-d H:i:s') . "\n\n";
+        $tables = [];
+
+        try {
+            $type = $this->db->type();
+            if ($type === 'sqlite') {
+                $tables = array_map(fn($r) => $r[0],
+                    $this->db->query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")->fetchAll(\PDO::FETCH_NUM));
+            } else {
+                $tables = array_map(fn($r) => $r[0],
+                    $this->db->query("SHOW TABLES")->fetchAll(\PDO::FETCH_NUM));
+            }
+        } catch (\Throwable $e) {}
+
+        foreach ($tables as $table) {
+            // Create table
+            try {
+                $create = $this->db->query("SHOW CREATE TABLE `{$table}`")->fetch(\PDO::FETCH_NUM);
+                $sql .= ($create[1] ?? "-- no DDL for {$table}") . ";\n\n";
+            } catch (\Throwable $e) {
+                $sql .= "-- Could not dump DDL for {$table}\n\n";
+            }
+
+            // Data
+            try {
+                $rows = $this->db->query("SELECT * FROM `{$table}`")->fetchAll();
+                if (!empty($rows)) {
+                    $cols = array_keys($rows[0]);
+                    $sql .= "INSERT INTO `{$table}` (`" . implode('`, `', $cols) . "`) VALUES\n";
+                    $values = [];
+                    foreach ($rows as $row) {
+                        $vals = array_map(fn($v) => $v === null ? 'NULL' : $this->db->pdo()->quote($v), $row);
+                        $values[] = '(' . implode(', ', $vals) . ')';
+                    }
+                    $sql .= implode(",\n", $values) . ";\n\n";
+                }
+            } catch (\Throwable $e) {}
+        }
+
+        return $sql;
+    }
+
+    private function zip_add(\ZipArchive $zip, string $path, string $prefix): void
+    {
+        foreach (new \RecursiveIteratorIterator(
+            new \RecursiveDirectoryIterator($path, \RecursiveDirectoryIterator::SKIP_DOTS)
+        ) as $file) {
+            $local = $prefix . str_replace($path . '/', '', $file->getPathname());
+            if ($file->isDir()) { $zip->addEmptyDir($local); }
+            else { $zip->addFile($file->getPathname(), $local); }
+        }
+    }
+
+    /**
+     * Incident alert — send notification via mail or webhook.
+     *
+     * $app->alert('critical', 'Database down')
+     * $app->alert('warning', 'Rate limit exceeded', ['ip' => '...'])
+     *
+     * Config: 'alerts' => ['mail' => 'admin@ex.com', 'webhook' => 'https://...']
+     */
+    public function alert(string $level, string $msg, array $context = []): self
+    {
+        $config = $this->config['alerts'] ?? [];
+        $this->audit('alert.' . $level, array_merge(['msg' => $msg], $context));
+
+        $payload = json_encode([
+            'level'   => $level,
+            'message' => $msg,
+            'context' => $context,
+            'ts'      => date('c'),
+        ]);
+
+        // Mail
+        if (!empty($config['mail'])) {
+            try {
+                $this->mail
+                    ->to($config['mail'])
+                    ->subject("[Trindade] [{$level}] Alert")
+                    ->message("<pre>{$payload}</pre>")
+                    ->send();
+            } catch (\Throwable $e) {
+                $this->log("Alert mail failed: " . $e->getMessage(), "error");
+            }
+        }
+
+        // Webhook
+        if (!empty($config['webhook'])) {
+            try {
+                $this->import($config['webhook'], [
+                    'method' => 'POST',
+                    'data'   => $payload,
+                    'headers' => ['Content-Type' => 'application/json'],
+                ]);
+            } catch (\Throwable $e) {
+                $this->log("Alert webhook failed: " . $e->getMessage(), "error");
+            }
+        }
+
+        return $this;
+    }
+
     // ======================== DB ========================
 
     public function db(): ?Database
     {
         if ($this->db === null && isset($this->config['db'])) {
             try { $this->db = new Database($this->config['db']); }
-            catch (\PDOException $e) { $this->log("DB error", "error"); throw new \Exception("Database connection failed"); }
+            catch (\PDOException $e) { $this->log("DB error", "error"); $this->db = null; }
         }
         return $this->db;
     }
@@ -1900,11 +2300,14 @@ class Trindade
 
     public function __call(string $name, array $args)
     {
+        if (isset($this->plugins[$name]) && is_callable($this->plugins[$name])) {
+            return call_user_func_array($this->plugins[$name], $args);
+        }
         if (!isset($this->{$name})) throw new \Exception("{$name}() not found");
         if (!is_callable($this->{$name})) throw new \Exception("{$name} is not callable");
         return call_user_func_array($this->{$name}, $args);
     }
 
     public function __set(string $name, $value): void { $this->{$name} = $value; }
-    public function __get(string $name) { return $this->{$name} ?? null; }
+    public function __get(string $name) { return $this->plugins[$name] ?? $this->{$name} ?? null; }
 }
