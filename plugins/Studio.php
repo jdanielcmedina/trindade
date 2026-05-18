@@ -123,12 +123,27 @@ class Studio
 <title>' . htmlspecialchars($title) . ' — Trindade Studio</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <script>tailwind.config={theme:{extend:{fontFamily:{sans:["Inter","-apple-system","BlinkMacSystemFont","Segoe UI",sans-serif],mono:["JetBrains Mono","SF Mono","Menlo",monospace]}}}};tailwind.config.darkMode="class";</script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/php.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/sql.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/json.min.js"></script>
 <style>
   *,::before,::after{--tw-border-spacing-x:0;--tw-border-spacing-y:0}
   body{font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#09090b;color:#fafafa;-webkit-font-smoothing:antialiased}
   ::-webkit-scrollbar{width:6px;height:6px}
   ::-webkit-scrollbar-track{background:transparent}
   ::-webkit-scrollbar-thumb{background:#27272a;border-radius:3px}
+  pre code.hljs{background:#09090b !important;padding:1rem !important;border-radius:0.5rem;font-family:"JetBrains Mono","SF Mono",Menlo,monospace;font-size:12px;line-height:1.6}
+  .hljs{background:#09090b !important}
+  textarea.code{font-family:"JetBrains Mono","SF Mono",Menlo,monospace;font-size:12px;line-height:1.6;tab-size:2}
+  .flow-node{position:relative;padding-left:24px}
+  .flow-node::before{content:"";position:absolute;left:8px;top:14px;bottom:-4px;width:1px;background:#27272a}
+  .flow-node:last-child::before{display:none}
+  .flow-dot{position:absolute;left:4px;top:5px;width:9px;height:9px;border-radius:50%;border:2px solid #a78bfa}
+  .flow-dot.start{background:#a78bfa}
+  .flow-dot.mid{background:#09090b;border-color:#6366f1}
+  .flow-dot.end{background:#22c55e;border-color:#22c55e}
 </style>
 </head><body class="bg-zinc-950 text-zinc-100 antialiased">';
 
@@ -259,13 +274,29 @@ echo '</body></html>';
         foreach ($routes as $rs) $total += count($rs);
 
         $badge = fn($m) => match($m) {
-            'GET' => 'bg-emerald-500/10 text-emerald-400',
-            'POST' => 'bg-blue-500/10 text-blue-400',
-            'PUT' => 'bg-amber-500/10 text-amber-400',
-            'DELETE' => 'bg-red-500/10 text-red-400',
-            'PATCH' => 'bg-sky-500/10 text-sky-400',
-            default => 'bg-zinc-800 text-zinc-400',
+            'GET' => 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20',
+            'POST' => 'bg-blue-500/10 text-blue-400 border-blue-500/20',
+            'PUT' => 'bg-amber-500/10 text-amber-400 border-amber-500/20',
+            'DELETE' => 'bg-red-500/10 text-red-400 border-red-500/20',
+            'PATCH' => 'bg-sky-500/10 text-sky-400 border-sky-500/20',
+            default => 'bg-zinc-800 text-zinc-400 border-zinc-700',
         };
+
+        // Extract route source code for each path
+        $source = [];
+        $f = $this->app->path('routes') . '/web.php';
+        if (file_exists($f)) {
+            $c = file_get_contents($f);
+            foreach ($routes as $m => $rs) {
+                foreach ($rs as $path => $info) {
+                    $em = preg_quote($m, '/');
+                    $ep = preg_quote($path, '/');
+                    if (preg_match("/\\\$app->on\\('{$em}\\s+{$ep}',\\s*function\\s*\\([^)]*\\)\\s*use\\s*\\([^)]*\\)\\s*\\{([^}]*(?:\\{[^}]*\\}[^}]*)*)\\}\\s*\\);/s", $c, $match)) {
+                        $source[$m][$path] = trim($match[1]);
+                    }
+                }
+            }
+        }
 
         echo '<div class="flex items-center justify-between mb-8">
             <div><h1 class="text-lg font-semibold tracking-tight">Rotas</h1><p class="text-sm text-zinc-500 mt-1">' . $total . ' endpoints</p></div>
@@ -280,7 +311,7 @@ echo '</body></html>';
                 </select>
                 <input id="re-path" placeholder="/users/:id" class="flex-1 bg-zinc-950 border border-zinc-800 rounded-lg px-3 py-2 text-xs font-mono outline-none focus:border-indigo-500 placeholder:text-zinc-600">
             </div>
-            <textarea id="re-code" rows="6" placeholder="$data = $app->body();" class="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-4 py-3 text-xs font-mono leading-relaxed outline-none focus:border-indigo-500 resize-y mb-4"></textarea>
+            <textarea id="re-code" rows="10" placeholder="$data = $app->body();" class="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-4 py-3 text-xs code outline-none focus:border-indigo-500 resize-y mb-4"></textarea>
             <div id="re-status" class="mb-4"></div>
             <div class="flex gap-2">
                 <button onclick="save_route()" class="px-4 py-2 bg-white text-black text-[13px] font-semibold rounded-lg hover:bg-zinc-200 transition-colors">Guardar</button>
@@ -288,18 +319,59 @@ echo '</body></html>';
                 <button onclick="document.getElementById(\'route-form\').classList.add(\'hidden\')" class="px-4 py-2 text-[13px] text-zinc-500 hover:text-zinc-300">Cancelar</button>
             </div>
         </div>
-        <div class="space-y-px">';
+        <div class="space-y-2">';
         foreach ($routes as $m => $rs) {
             foreach ($rs as $path => $info) {
-                echo '<div class="group flex items-center gap-3 px-4 py-2.5 bg-zinc-900 border border-zinc-800 first:rounded-t-lg last:rounded-b-lg hover:bg-zinc-800/50 transition-colors">
-                    <span class="px-2 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wide ' . $badge($m) . '">' . $m . '</span>
-                    <code class="flex-1 text-[13px] font-mono">' . htmlspecialchars($path) . '</code>
-                    <button onclick="del_route(\'' . $m . '\',\'' . addslashes($path) . '\')" class="text-[11px] text-zinc-500 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-all">Remove</button>
+                $id = 'r' . md5($m . $path);
+                $src = htmlspecialchars($source[$m][$path] ?? '// no source extracted');
+                $code = $source[$m][$path] ?? '';
+                $hasDb = strpos($code, '$app->db') !== false;
+                $hasBody = strpos($code, '$app->body') !== false;
+                $hasParam = preg_match('/\$app->param\(/', $code);
+                $hasReturn = strpos($code, 'return') !== false;
+
+                $steps = '';
+                if ($hasBody) $steps .= '<div class="flow-node"><div class="flow-dot start"></div><span class="text-xs text-zinc-400">Recebe dados do body</span></div>';
+                if ($hasParam) $steps .= '<div class="flow-node"><div class="flow-dot mid"></div><span class="text-xs text-zinc-400">Le parametros da URL</span></div>';
+                if ($hasDb) $steps .= '<div class="flow-node"><div class="flow-dot mid"></div><span class="text-xs text-zinc-400">Query a base de dados</span></div>';
+                if ($hasReturn) $steps .= '<div class="flow-node"><div class="flow-dot end"></div><span class="text-xs text-zinc-400">Retorna resposta</span></div>';
+
+                echo '<div class="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden hover:border-zinc-700 transition-colors">
+                    <div onclick="toggle_route(\'' . $id . '\')" class="flex items-center gap-3 px-4 py-3 cursor-pointer select-none group">
+                        <span class="px-2 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wide border ' . $badge($m) . '">' . $m . '</span>
+                        <code class="flex-1 text-[13px] font-mono font-medium">' . htmlspecialchars($path) . '</code>
+                        <svg id="' . $id . '-arr" class="w-4 h-4 text-zinc-500 group-hover:text-zinc-300 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+                    </div>
+                    <div id="' . $id . '" class="hidden border-t border-zinc-800 px-4 py-4 bg-zinc-950/50">
+                        <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                            <div class="lg:col-span-2">
+                                <div class="text-[11px] font-medium uppercase tracking-wider text-zinc-500 mb-2">Codigo</div>
+                                <pre><code class="language-php" id="' . $id . '-code">' . $src . '</code></pre>
+                            </div>
+                            <div>
+                                <div class="text-[11px] font-medium uppercase tracking-wider text-zinc-500 mb-2">Fluxo</div>
+                                <div class="flow-nodes bg-zinc-900 border border-zinc-800 rounded-lg p-4">' . ($steps ?: '<span class="text-xs text-zinc-600">Fluxo simples</span>') . '</div>
+                            </div>
+                        </div>
+                    </div>
                 </div>';
             }
         }
         echo '</div>
         <script>
+        function toggle_route(id) {
+            const el = document.getElementById(id);
+            const arr = document.getElementById(id + "-arr");
+            const code = document.getElementById(id + "-code");
+            if (el.classList.contains("hidden")) {
+                el.classList.remove("hidden");
+                arr.style.transform = "rotate(180deg)";
+                if (code && typeof hljs !== "undefined") hljs.highlightElement(code);
+            } else {
+                el.classList.add("hidden");
+                arr.style.transform = "";
+            }
+        }
         async function save_route() {
             const m = document.getElementById("re-method").value;
             const p = document.getElementById("re-path").value;
@@ -321,6 +393,13 @@ echo '</body></html>';
             await fetch("/studio/api/routes/delete", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({method:m,path:p})});
             location.reload();
         }
+        document.addEventListener("DOMContentLoaded", function() {
+            document.querySelectorAll("textarea.code").forEach(function(t) {
+                t.addEventListener("keydown", function(e) {
+                    if (e.key === "Tab") { e.preventDefault(); var s = this.selectionStart; this.value = this.value.substring(0,s) + "    " + this.value.substring(this.selectionEnd); this.selectionStart = this.selectionEnd = s + 4; }
+                });
+            });
+        });
         </script>';
     }
 
@@ -338,7 +417,7 @@ echo '</body></html>';
         echo '</div>
         <div class="bg-zinc-900 border border-zinc-800 rounded-xl p-5 mb-6">
             <h3 class="text-sm font-semibold mb-3">SQL Console</h3>
-            <textarea id="sql-query" rows="3" placeholder="SELECT * FROM users LIMIT 10" class="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-4 py-3 text-xs font-mono outline-none focus:border-indigo-500 resize-y mb-3"></textarea>
+            <textarea id="sql-query" rows="4" placeholder="SELECT * FROM users LIMIT 10" class="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-4 py-3 text-xs code outline-none focus:border-indigo-500 resize-y mb-3"></textarea>
             <button onclick="run_query()" class="px-4 py-2 bg-white text-black text-[13px] font-semibold rounded-lg hover:bg-zinc-200 transition-colors">Executar</button>
         </div>
         <div id="db-result" class="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden hidden">
@@ -391,12 +470,29 @@ echo '</body></html>';
         <script>
         async function open_file(dir, name) {
             const r = await fetch("/studio/api/file?dir=" + dir + "&name=" + name).then(r => r.json());
-            document.getElementById("file-editor").innerHTML = \'<div class="mt-6 bg-zinc-900 border border-zinc-800 rounded-xl p-5"><div class="flex items-center justify-between mb-3"><h3 class="text-sm font-semibold font-mono">\' + dir + \'/\' + name + \'</h3></div><textarea id="file-content" rows="22" class="w-full bg-zinc-950 border border-zinc-800 rounded-lg p-4 text-xs font-mono leading-relaxed outline-none focus:border-indigo-500 resize-y">\' + (r.content || "") + \'</textarea><button onclick="save_file(\\\'\' + dir + \'\\\',\\\'\' + name + \'\\\')" class="mt-3 px-4 py-2 bg-white text-black text-[13px] font-semibold rounded-lg hover:bg-zinc-200 transition-colors">Guardar</button></div>\';
+            const ext = name.split(".").pop();
+            const lang = ext === "php" ? "php" : (ext === "json" ? "json" : "plaintext");
+            document.getElementById("file-editor").innerHTML = \'<div class="mt-6 bg-zinc-900 border border-zinc-800 rounded-xl p-5"><div class="flex items-center justify-between mb-3"><h3 class="text-sm font-semibold font-mono">\' + dir + \'/\' + name + \'</h3><div class="flex gap-2"><span class="text-[11px] text-zinc-500">\' + lang + \'</span><span class="text-[11px] text-zinc-600">\' + (r.content || "").split("\\n").length + \' lines</span></div></div><textarea id="file-content" rows="22" class="w-full bg-zinc-950 border border-zinc-800 rounded-lg p-4 text-xs code outline-none focus:border-indigo-500 resize-y">\' + (r.content || "") + \'</textarea><div class="flex justify-between items-center mt-3"><div id="file-preview" class="flex-1 mr-4 hidden"><pre><code class="language-\' + lang + \' rounded-lg"></code></pre></div><div class="flex gap-2"><button onclick="toggle_preview()" class="px-3 py-1.5 text-[11px] rounded-lg bg-zinc-800 border border-zinc-700 hover:bg-zinc-700 transition-colors">Preview</button><button onclick="save_file(\\\'\' + dir + \'\\\',\\\'\' + name + \'\\\')" class="px-4 py-2 bg-white text-black text-[13px] font-semibold rounded-lg hover:bg-zinc-200 transition-colors">Guardar</button></div></div></div>\';
         }
         async function save_file(dir, name) {
             const content = document.getElementById("file-content").value;
             await fetch("/studio/api/file", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({dir,name,content})});
             location.reload();
+        }
+        function toggle_preview() {
+            const ta = document.getElementById("file-content");
+            const prev = document.getElementById("file-preview");
+            if (prev.classList.contains("hidden")) {
+                prev.classList.remove("hidden");
+                ta.classList.add("hidden");
+                const ext = (prev.previousElementSibling?.dataset?.lang || "plaintext");
+                prev.querySelector("code").textContent = ta.value;
+                prev.querySelector("code").className = "language-" + (ext === "php" ? "php" : "plaintext");
+                if (typeof hljs !== "undefined") hljs.highlightElement(prev.querySelector("code"));
+            } else {
+                prev.classList.add("hidden");
+                ta.classList.remove("hidden");
+            }
         }
         </script>';
     }
@@ -512,12 +608,46 @@ echo '</body></html>';
     private function view_logs()
     {
         $log = $this->app->storage('logs') . '/app.log';
-        $content = file_exists($log) ? htmlspecialchars(file_get_contents($log)) : 'No log entries.';
-        echo '<div class="flex items-center justify-between mb-8"><h1 class="text-lg font-semibold tracking-tight">Logs</h1>
-            <a href="/studio?p=logs" class="text-xs text-indigo-400 hover:underline">Refresh</a></div>
-            <div class="bg-zinc-900 border border-zinc-800 rounded-xl p-5">
-                <pre class="text-xs font-mono text-zinc-400 whitespace-pre-wrap leading-relaxed max-h-[70vh] overflow-y-auto">' . $content . '</pre>
-            </div>';
+        $raw = file_exists($log) ? file_get_contents($log) : '';
+        $lines = array_reverse(array_filter(explode("\n", $raw)));
+
+        echo '<div class="mb-8"><h1 class="text-lg font-semibold tracking-tight">Logs</h1><p class="text-sm text-zinc-500 mt-1">' . count($lines) . ' entries</p></div>
+        <div class="flex gap-2 mb-4 flex-wrap">
+            <button onclick="filter_logs(\'all\')" class="log-filter px-3 py-1.5 text-[11px] font-medium rounded-lg bg-indigo-500 text-white" data-level="all">Todos</button>
+            <button onclick="filter_logs(\'error\')" class="log-filter px-3 py-1.5 text-[11px] font-medium rounded-lg bg-zinc-900 border border-zinc-800 text-zinc-400 hover:border-zinc-700" data-level="error">Erros</button>
+            <button onclick="filter_logs(\'warning\')" class="log-filter px-3 py-1.5 text-[11px] font-medium rounded-lg bg-zinc-900 border border-zinc-800 text-zinc-400 hover:border-zinc-700" data-level="warning">Warnings</button>
+            <button onclick="filter_logs(\'info\')" class="log-filter px-3 py-1.5 text-[11px] font-medium rounded-lg bg-zinc-900 border border-zinc-800 text-zinc-400 hover:border-zinc-700" data-level="info">Info</button>
+            <button onclick="filter_logs(\'debug\')" class="log-filter px-3 py-1.5 text-[11px] font-medium rounded-lg bg-zinc-900 border border-zinc-800 text-zinc-400 hover:border-zinc-700" data-level="debug">Debug</button>
+            <div class="flex-1"></div>
+            <input id="log-search" placeholder="Pesquisar..." onkeyup="filter_logs()" class="w-48 bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-1.5 text-xs outline-none focus:border-indigo-500 placeholder:text-zinc-600">
+        </div>
+        <div class="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden" id="log-container">';
+        foreach ($lines as $line) {
+            $level = 'info';
+            $color = 'text-zinc-400';
+            if (stripos($line, '[error]') !== false) { $level = 'error'; $color = 'text-red-400'; }
+            elseif (stripos($line, '[warning]') !== false) { $level = 'warning'; $color = 'text-amber-400'; }
+            elseif (stripos($line, '[debug]') !== false) { $level = 'debug'; $color = 'text-zinc-500'; }
+            elseif (stripos($line, '[info]') !== false) { $level = 'info'; $color = 'text-zinc-400'; }
+            echo '<div class="log-line flex gap-3 px-4 py-1.5 border-b border-zinc-800/50 text-xs font-mono ' . $color . ' hover:bg-zinc-800/30 transition-colors" data-level="' . $level . '" data-text="' . htmlspecialchars(strtolower($line)) . '"><span class="text-zinc-600 w-10 shrink-0">' . ($level === 'error' ? 'ERR' : ($level === 'warning' ? 'WRN' : ($level === 'debug' ? 'DBG' : 'INF'))) . '</span><span class="truncate">' . htmlspecialchars($line) . '</span></div>';
+        }
+        echo '</div>
+        <script>
+        let logLevel = "all";
+        function filter_logs(level) {
+            if (level) logLevel = level;
+            document.querySelectorAll(".log-filter").forEach(b => {
+                if (b.dataset.level === logLevel) { b.className = "log-filter px-3 py-1.5 text-[11px] font-medium rounded-lg bg-indigo-500 text-white"; }
+                else { b.className = "log-filter px-3 py-1.5 text-[11px] font-medium rounded-lg bg-zinc-900 border border-zinc-800 text-zinc-400 hover:border-zinc-700"; }
+            });
+            const q = (document.getElementById("log-search").value || "").toLowerCase();
+            document.querySelectorAll(".log-line").forEach(el => {
+                const matchLevel = logLevel === "all" || el.dataset.level === logLevel;
+                const matchSearch = !q || el.dataset.text.includes(q);
+                el.style.display = matchLevel && matchSearch ? "" : "none";
+            });
+        }
+        </script>';
     }
 
     private function view_workflow()
