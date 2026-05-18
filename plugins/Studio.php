@@ -21,6 +21,7 @@ class Studio
             $app->on('GET /api/routes', [$this, 'api_routes']);
             $app->on('POST /api/routes', [$this, 'api_route_save']);
             $app->on('POST /api/routes/delete', [$this, 'api_route_delete']);
+            $app->on('POST /api/routes/validate', [$this, 'api_route_validate']);
             $app->on('GET /api/db/tables', [$this, 'api_db_tables']);
             $app->on('GET /api/db/table/:table', [$this, 'api_db_table']);
             $app->on('POST /api/db/query', [$this, 'api_db_query']);
@@ -165,12 +166,69 @@ async function routes_page() {
 async function add_route() {
     const ed = document.getElementById("route-edit");
     ed.style.display = "block";
-    ed.innerHTML = `<h3>Nova Rota</h3>
-    <div class="form-group"><label>Metodo</label><select id="re-method" class="input"><option>GET</option><option>POST</option><option>PUT</option><option>DELETE</option><option>PATCH</option><option>GET|POST</option></select></div>
-    <div class="form-group"><label>Path</label><input id="re-path" class="input" placeholder="/users/:id"></div>
-    <div class="form-group"><label>Codigo</label><textarea id="re-code" class="input" rows="8" placeholder="return $app->success([...]);"></textarea></div>
-    <button class="btn btn-primary" onclick="save_route()">Guardar</button>
-    <button class="btn" onclick="document.getElementById(\'route-edit\').style.display=\'none\'">Cancelar</button>`;
+    ed.innerHTML = \`
+    <div class="panel"><h3>Nova Rota</h3>
+    <div class="form-row">
+        <div class="form-group" style="flex:0 0 auto"><label>Metodo</label><select id="re-method" class="input" style="width:auto"><option>GET</option><option>POST</option><option>PUT</option><option>DELETE</option><option>PATCH</option><option>GET|POST</option></select></div>
+        <div class="form-group" style="flex:1"><label>Path</label><input id="re-path" class="input" placeholder="/users/:id"></div>
+    </div>
+    <div class="form-row">
+        <div class="form-group" style="flex:1"><label>Descricao</label><input id="re-desc" class="input" placeholder="O que faz esta rota..."></div>
+        <div class="form-group" style="flex:0 0 auto"><label>Autenticacao</label><select id="re-auth" class="input" style="width:auto"><option value="none">Publica</option><option value="jwt">JWT</option><option value="session">Sessao</option><option value="csrf">CSRF</option><option value="bearer">Bearer Token</option></select></div>
+    </div>
+    <div class="form-group"><label>Parametros de entrada</label>
+        <div id="re-params"><div class="form-row" style="font-size:11px;color:var(--muted);margin-bottom:.25rem"><span style="width:100px">Nome</span><span style="width:80px">Tipo</span><span style="width:80px">Origem</span><span style="width:60px">Obrig.</span><span>Validacao</span></div></div>
+        <button class="btn btn-sm" onclick="add_param()" style="margin-top:.25rem">+ Parametro</button>
+    </div>
+        <div class="form-group"><label>Codigo</label><textarea id="re-code" class="input code" rows="12" placeholder="// PHP code
+\$data = \$app->body();
+\$id = \$app->param(&quot;id&quot;);
+return \$app->success(\$data);"></textarea></div>
+    <div style="display:flex;gap:.5rem;align-items:center">
+        <button class="btn btn-primary" onclick="save_route()">Guardar</button>
+        <button class="btn" onclick="validate_route()">Validar</button>
+        <button class="btn" onclick="hide_editor()">Cancelar</button>
+        <div id="re-status" style="font-size:12px;margin-left:1rem"></div>
+    </div></div>\`;
+    add_param(); add_param();
+}
+
+let param_idx = 0;
+function add_param() {
+    const i = param_idx++;
+    const div = document.getElementById("re-params");
+    div.insertAdjacentHTML("beforeend", \`
+        <div class="form-row" id="param-\${i}" style="margin-bottom:.25rem">
+            <input class="input" style="width:100px;font-size:11px" placeholder="id">
+            <select class="input" style="width:80px;font-size:11px"><option>string</option><option>int</option><option>float</option><option>bool</option><option>array</option></select>
+            <select class="input" style="width:80px;font-size:11px"><option>path</option><option>query</option><option>body</option></select>
+            <select class="input" style="width:60px;font-size:11px"><option value="yes">Sim</option><option value="no">Nao</option></select>
+            <input class="input" style="flex:1;font-size:11px" placeholder="required|email|min:3">
+            <button class="btn btn-sm btn-danger" onclick="remove_param(\${i})">X</button>
+        </div>\`);
+}
+
+function remove_param(i) { document.getElementById("param-" + i).remove(); }
+
+function hide_editor() { document.getElementById("route-edit").style.display = "none"; }
+
+async function validate_route() {
+    const method = document.getElementById("re-method").value;
+    const code = document.getElementById("re-code").value;
+    const auth = document.getElementById("re-auth").value;
+    const st = document.getElementById("re-status");
+
+    st.innerHTML = "A validar...";
+    const r = await api("/routes/validate", {method:"POST", body:JSON.stringify({method,auth,code})});
+
+    if (r.ready) {
+        st.innerHTML = \'<span class="text-success">Pronto para producao.</span>\';
+    } else {
+        let h = r.ok ? \'<span class="text-success">Sintaxe OK.</span> \' : \'<span class="text-error">Erro de sintaxe.</span> \';
+        r.warnings.forEach(w => h += \'<br><span class="text-error">Aviso: \' + w + \'</span>\');
+        if (!r.ok) h += \'<br><pre class="code-block" style="max-height:200px;margin-top:.5rem">\' + escape_html(r.output) + \'</pre>\';
+        st.innerHTML = h;
+    }
 }
 
 async function save_route() {
@@ -549,14 +607,65 @@ load("dashboard");
         $path = $data['path'] ?? '';
         $file = $this->app->path('routes') . '/web.php';
         $content = file_get_contents($file);
-
         $esc_method = preg_quote($method, '/');
         $esc_path = preg_quote($path, '/');
         $pattern = "/\\\$app->on\\('{$esc_method}\\s+{$esc_path}',\\s*function\\s*\\([^)]*\\)\\s*use\\s*\\([^)]*\\)\\s*\\{[^}]*\\}\\);/s";
-
         $content = preg_replace($pattern, '', $content);
         file_put_contents($file, $content);
         echo json_encode(['ok' => true]);
+    }
+
+    public function api_route_validate()
+    {
+        $this->check();
+        $data = json_decode(file_get_contents('php://input'), true);
+        $code = $data['code'] ?? '';
+
+        // Write to temp file and check syntax
+        $tmp = tempnam(sys_get_temp_dir(), 'trindade_') . '.php';
+        file_put_contents($tmp, "<?php\n" . $code . "\n?>");
+        exec("php -l " . escapeshellarg($tmp) . " 2>&1", $out, $exit);
+
+        $syntax_ok = $exit === 0;
+        $output = implode("\n", $out);
+        unlink($tmp);
+
+        $warnings = [];
+
+        // Check for POST/PUT/DELETE without CSRF
+        $method = $data['method'] ?? '';
+        $auth = $data['auth'] ?? 'none';
+        if (in_array($method, ['POST', 'PUT', 'DELETE']) && $auth === 'none') {
+            $warnings[] = "Route " . $method . " sem autenticacao ou CSRF — vulneravel a ataques.";
+        }
+
+        // Check for DB operations without auth
+        if (preg_match('/\$app->db/', $code) && $auth === 'none') {
+            $warnings[] = "Operacoes de base de dados detetadas sem autenticacao.";
+        }
+
+        // Check for $app->param() calls vs declared params
+        $declared = $data['params'] ?? [];
+        preg_match_all("/\\\$app->param\('([^']+)'\)/", $code, $used_params);
+        foreach (($used_params[1] ?? []) as $p) {
+            $found = false;
+            foreach ($declared as $dp) {
+                if (($dp['name'] ?? '') === $p) { $found = true; break; }
+            }
+            if (!$found) $warnings[] = "Parametro '" . $p . "' usado no codigo mas nao declarado.";
+        }
+
+        // Check response format
+        if (!preg_match('/return/', $code)) {
+            $warnings[] = "Nenhum 'return' encontrado. A rota nao devolve resposta.";
+        }
+
+        echo json_encode([
+            'ok'       => $syntax_ok,
+            'output'   => $output,
+            'warnings' => $warnings,
+            'ready'    => $syntax_ok && empty($warnings),
+        ]);
     }
 
     public function api_db_tables()
