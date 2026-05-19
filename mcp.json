@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "trindade": {
+      "command": "php",
+      "args": ["bin/mcp"],
+      "cwd": "/path/to/your-trindade-project"
+    }
+  }
+}
