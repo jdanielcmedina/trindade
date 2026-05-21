@@ -3,7 +3,7 @@
     "trindade": {
       "command": "php",
       "args": ["bin/mcp"],
-      "cwd": "/path/to/your-trindade-project"
+      "cwd": "/Users/jdanielcmedina/Desktop/Trindade"
     }
   }
 }
