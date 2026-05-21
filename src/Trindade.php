@@ -962,15 +962,44 @@ class Trindade
     private array $perm = ['folder' => 0755, 'private' => 0600, 'public' => 0644];
 
     private const CSS = '
-        body{font-family:-apple-system,system-ui,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;line-height:1.6;margin:0;padding:20px;background:#f8f9fa;color:#333}
-        .box{max-width:1200px;margin:0 auto;background:white;border-radius:8px;box-shadow:0 2px 4px rgba(0,0,0,0.1);overflow:hidden}
-        .head{background:#dc3545;color:white;padding:2rem}
-        .body{padding:2rem}
-        .title{font-size:24px;font-weight:500;margin:0}
-        .msg{font-size:16px;margin:1rem 0;color:#666}
-        .details{background:#f8f9fa;padding:1rem;border-radius:4px;margin:1rem 0}
-        .stack{font-family:monospace;font-size:13px;white-space:pre-wrap;background:#f1f3f5;padding:1rem;border-radius:4px;color:#666}
+        :root{--bg:#09090b;--surface:#18181b;--border:#27272a;--text:#fafafa;--muted:#a1a1aa;--red:#ef4444;--amber:#f59e0b;--blue:#3b82f6}
+        *{margin:0;padding:0;box-sizing:border-box}
+        body{font-family:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:var(--bg);color:var(--text);min-height:100vh;display:flex;align-items:center;justify-content:center;-webkit-font-smoothing:antialiased}
+        .wrap{width:100%;max-width:720px;padding:2rem}
+        .card{background:var(--surface);border:1px solid var(--border);border-radius:16px;overflow:hidden}
+        .hdr{display:flex;align-items:flex-start;gap:1.25rem;padding:2rem 2rem 1.5rem}
+        .code-badge{display:flex;align-items:center;justify-content:center;width:56px;height:56px;border-radius:14px;font-size:20px;font-weight:700;font-family:"JetBrains Mono","SF Mono",monospace;flex-shrink:0}
+        .code-badge.e4{background:#3b82f610;color:var(--blue);border:1px solid #3b82f620}
+        .code-badge.e5{background:#ef444410;color:var(--red);border:1px solid #ef444420}
+        .hdr-info h1{font-size:1.15rem;font-weight:600;letter-spacing:-.3px;margin-bottom:.25rem}
+        .hdr-info p{font-size:.875rem;color:var(--muted);line-height:1.5}
+        .trace-section{border-top:1px solid var(--border);padding:1.5rem 2rem}
+        .trace-label{font-size:.75rem;font-weight:600;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);margin-bottom:.75rem}
+        .trace{font-family:"JetBrains Mono","SF Mono",Menlo,monospace;font-size:.75rem;line-height:1.8;color:var(--muted);white-space:pre-wrap;overflow-x:auto}
+        .trace .file{color:var(--blue)}
+        .trace .line{color:var(--amber)}
+        .trace .fn{color:#818cf8}
+        .footer{padding:1rem 2rem;border-top:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;font-size:.75rem;color:var(--muted)}
+        .footer span{display:flex;align-items:center;gap:.35rem}
+        .dot{width:6px;height:6px;border-radius:50%;background:#22c55e}
+        @keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
     ';
+
+    private const ERROR_PAGES = [
+        400 => 'The request could not be understood.',
+        401 => 'You need to authenticate to access this resource.',
+        403 => 'You do not have permission to access this resource.',
+        404 => 'The page you are looking for does not exist.',
+        405 => 'This method is not allowed for this endpoint.',
+        408 => 'The request took too long and timed out.',
+        409 => 'There is a conflict with the current state of the resource.',
+        422 => 'The provided data failed validation.',
+        429 => 'You have made too many requests. Please slow down.',
+        500 => 'Something went wrong on our end. We are working on it.',
+        502 => 'The server received an invalid response from an upstream service.',
+        503 => 'The service is temporarily unavailable. Please try again later.',
+        504 => 'An upstream service took too long to respond.',
+    ];
 
     public function __construct(array $config = [], ?array $database = null)
     {
@@ -1529,7 +1558,7 @@ class Trindade
                 return;
             }
         }
-        if ($return) return null;
+        if ($return) { $this->debug('Not Found', 404); }
         $this->debug('Not Found', 404);
     }
 
@@ -2894,24 +2923,49 @@ class Trindade
     public function debug(string $msg, int $code = 500, ?string $details = null): void
     {
         if (php_sapi_name() === 'cli') {
-            echo "\n[ERROR] {$msg}\n";
-            if ($details && ($this->config['debug'] ?? false)) echo "{$details}\n";
+            echo "\n  [ERROR {$code}] {$msg}\n";
+            if ($details && ($this->config['debug'] ?? false)) echo "  {$details}\n";
             exit($code);
         }
         if (!headers_sent()) { http_response_code($code); header('Content-Type: text/html; charset=utf-8'); }
 
-        $show = ($code < 500 || ($this->config['debug'] ?? false))
+        $is5xx = $code >= 500;
+        $badgeClass = $is5xx ? 'e5' : 'e4';
+        $title = self::ERROR_PAGES[$code] ?? ($is5xx ? 'An unexpected error occurred.' : 'Request could not be processed.');
+
+        $showMsg = ($code < 500 || ($this->config['debug'] ?? false))
             ? htmlspecialchars($msg, ENT_QUOTES, 'UTF-8')
             : 'An unexpected error occurred. Please try again later.';
 
-        $extra = '';
+        $stackHtml = '';
         if (($this->config['debug'] ?? false) && $details) {
-            $extra = '<div class="details"><div class="stack">' . htmlspecialchars($details, ENT_QUOTES, 'UTF-8') . '</div></div>';
+            $lines = explode("\n", $details);
+            $formatted = '';
+            foreach ($lines as $line) {
+                $line = htmlspecialchars($line, ENT_QUOTES, 'UTF-8');
+                if (preg_match('/#(\d+)\s+(.+?)\((\d+)\)/', $line, $m)) {
+                    $formatted .= '<span class="file">#' . $m[1] . '</span> <span class="fn">' . $m[2] . '</span>:<span class="line">' . $m[3] . '</span>' . "\n";
+                } elseif (preg_match('/#(\d+)\s+(.+)/', $line, $m)) {
+                    $formatted .= '<span class="file">#' . $m[1] . '</span> ' . $m[2] . "\n";
+                } elseif (preg_match('/thrown in (.+?) on line (\d+)/', $line, $m)) {
+                    $formatted .= '<span class="file">' . $m[1] . '</span>:<span class="line">' . $m[2] . '</span>' . "\n";
+                } else {
+                    $formatted .= $line . "\n";
+                }
+            }
+            $stackHtml = '<div class="trace-section"><div class="trace-label">Stack Trace</div><div class="trace">' . trim($formatted) . '</div></div>';
         }
 
-        echo '<!DOCTYPE html><html><head><title>Error ' . (int)$code . '</title><style>' . self::CSS . '</style></head><body>'
-           . '<div class="box"><div class="head"><h1 class="title">Error ' . (int)$code . '</h1></div>'
-           . '<div class="body"><div class="msg">' . $show . '</div>' . $extra . '</div></div></body></html>';
+        echo '<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
+           . '<title>' . $code . ' — Trindade</title><style>' . self::CSS . '</style></head><body>'
+           . '<div class="wrap"><div class="card">'
+           . '<div class="hdr"><div class="code-badge ' . $badgeClass . '">' . $code . '</div>'
+           . '<div class="hdr-info"><h1>' . htmlspecialchars($title, ENT_QUOTES, 'UTF-8') . '</h1>'
+           . '<p>' . $showMsg . '</p></div></div>'
+           . $stackHtml
+           . '<div class="footer"><span><span class="dot"></span> Trindade ' . ($this->config['debug'] ?? false ? 'debug' : 'production') . '</span>'
+           . '<span>PHP ' . PHP_VERSION . '</span></div>'
+           . '</div></div></body></html>';
         exit($code);
     }
 
