@@ -2929,6 +2929,15 @@ class Trindade
         }
         if (!headers_sent()) { http_response_code($code); header('Content-Type: text/html; charset=utf-8'); }
 
+        // Custom error view: views/errors/404.php, views/errors/500.php, etc.
+        $custom = $this->paths['views'] . '/errors/' . $code . '.php';
+        if (file_exists($custom)) {
+            $message = $msg;
+            $trace = $details;
+            require $custom;
+            exit($code);
+        }
+
         $is5xx = $code >= 500;
         $badgeClass = $is5xx ? 'e5' : 'e4';
         $title = self::ERROR_PAGES[$code] ?? ($is5xx ? 'An unexpected error occurred.' : 'Request could not be processed.');
