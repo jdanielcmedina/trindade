@@ -351,6 +351,36 @@ class Mcp
                 'fn' => fn($args) => $this->tool_db_connections(),
             ],
 
+            // ── Queue ──
+            'queue_push' => [
+                'name' => 'queue_push',
+                'description' => 'Push a job to the queue for async processing.',
+                'inputSchema' => ['type' => 'object', 'properties' => [
+                    'job' => ['type' => 'string', 'description' => 'Job name/identifier'],
+                    'payload' => ['type' => 'object', 'description' => 'Job data'],
+                    'delay' => ['type' => 'integer', 'description' => 'Delay in seconds before processing'],
+                ], 'required' => ['job']],
+                'fn' => fn($args) => $this->tool_queue_push($args),
+            ],
+            'queue_status' => [
+                'name' => 'queue_status',
+                'description' => 'Get queue status: pending and failed jobs count.',
+                'inputSchema' => ['type' => 'object', 'properties' => [], 'required' => []],
+                'fn' => fn($args) => $this->tool_queue_status(),
+            ],
+            'queue_retry' => [
+                'name' => 'queue_retry',
+                'description' => 'Retry all failed jobs.',
+                'inputSchema' => ['type' => 'object', 'properties' => [], 'required' => []],
+                'fn' => fn($args) => $this->tool_queue_retry(),
+            ],
+            'schedule_list' => [
+                'name' => 'schedule_list',
+                'description' => 'List scheduled tasks.',
+                'inputSchema' => ['type' => 'object', 'properties' => [], 'required' => []],
+                'fn' => fn($args) => $this->tool_schedule_list(),
+            ],
+
             // ── Cache / Storage ──
             'cache_clear' => [
                 'name' => 'cache_clear',
@@ -676,5 +706,35 @@ class Mcp
     private function tool_db_connections(): string
     {
         return json_encode($this->app()->db_connections());
+    }
+
+    private function tool_queue_push(array $args): string
+    {
+        $this->app()->queue($args['job'], $args['payload'] ?? [], $args['delay'] ?? 0);
+        $s = $this->app()->queue_status();
+        return "Job pushed. Queue: {$s['pending']} pending, {$s['failed']} failed.";
+    }
+
+    private function tool_queue_status(): string
+    {
+        return json_encode($this->app()->queue_status());
+    }
+
+    private function tool_queue_retry(): string
+    {
+        $n = $this->app()->queue_retry();
+        return "{$n} failed jobs requeued.";
+    }
+
+    private function tool_schedule_list(): string
+    {
+        $dir = $this->app()->storage('cache') . '/schedule/';
+        if (!is_dir($dir)) return 'No scheduled tasks.';
+        $list = [];
+        foreach (glob($dir . '*') as $f) {
+            $t = unserialize(file_get_contents($f));
+            if ($t) $list[] = $t['cron'];
+        }
+        return json_encode($list);
     }
 }

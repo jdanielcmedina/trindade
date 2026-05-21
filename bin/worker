@@ -1,0 +1,65 @@
+#!/usr/bin/env php
+<?php
+
+/**
+ * Trindade Worker
+ *
+ *   php bin/worker queue     Process queued jobs
+ *   php bin/worker schedule   Run scheduler
+ *   php bin/worker all        Run both (blocking loop)
+ */
+
+if (php_sapi_name() !== 'cli') exit('CLI only' . PHP_EOL);
+
+$autoloads = [
+    dirname(__DIR__) . '/vendor/autoload.php',
+    dirname(__DIR__) . '/../../autoload.php',
+];
+$autoload = null;
+foreach ($autoloads as $a) { if (file_exists($a)) { $autoload = $a; break; } }
+if (!$autoload) exit("Run composer install first.\n");
+require $autoload;
+
+$cmd = $argv[1] ?? 'all';
+
+// Load config
+$config = [];
+$cf = dirname(__DIR__) . '/config.php';
+if (file_exists($cf)) $config = require $cf;
+
+$app = new \Trindade\Trindade(array_merge(['root' => dirname(__DIR__), 'test' => true], $config));
+
+switch ($cmd) {
+    case 'queue':
+        echo "Processing queue...\n";
+        $r = $app->queue_work(60, 0);
+        foreach ($r as $msg) echo "  {$msg}\n";
+        $s = $app->queue_status();
+        echo "Done. Pending: {$s['pending']}, Failed: {$s['failed']}\n";
+        break;
+
+    case 'schedule':
+        echo "Running scheduler...\n";
+        $r = $app->schedule_run();
+        foreach ($r as $msg) echo "  {$msg}\n";
+        break;
+
+    case 'retry':
+        echo "Retrying failed jobs...\n";
+        $n = $app->queue_retry();
+        echo "{$n} jobs requeued.\n";
+        break;
+
+    case 'all':
+        echo "Worker started (Ctrl+C to stop)\n";
+        while (true) {
+            $app->schedule_run();
+            $r = $app->queue_work(10, 5);
+            if (!empty($r)) foreach ($r as $msg) echo "  Q: {$msg}\n";
+            sleep(1);
+        }
+        break;
+
+    default:
+        echo "Usage: php bin/worker [queue|schedule|retry|all]\n";
+}

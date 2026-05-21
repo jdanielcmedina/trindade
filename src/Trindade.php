@@ -695,6 +695,7 @@ class Trindade
     private array $notfound = [];
     private array $middleware = [];
     private array $plugins = [];
+    private array $listeners = [];
     private $fallback = null;
     private int $code = 200;
 
@@ -735,6 +736,8 @@ class Trindade
                     'uploads' => $root . 'storage/uploads',
                     'temp'    => $root . 'storage/temp',
                     'backups' => $root . 'storage/backups',
+                    'queue'   => $root . 'storage/queue',
+                    'failed'  => $root . 'storage/queue/failed',
                 ],
             ];
 
@@ -898,6 +901,272 @@ class Trindade
     {
         $this->middleware[] = $handler;
         return $this;
+    }
+
+    // ======================== EVENTS ========================
+
+    /**
+     * Register an event listener.
+     *
+     * $app->listen('user.created', function ($data) use ($app) {
+     *     $app->mail->to($data['email'])->subject('Welcome')->send();
+     * });
+     */
+    public function listen(string $event, callable $handler): self
+    {
+        $this->listeners[$event][] = $handler;
+        return $this;
+    }
+
+    /**
+     * Emit an event — triggers all registered listeners.
+     *
+     * $app->emit('user.created', ['email' => 'x@x.com', 'id' => 42]);
+     */
+    public function emit(string $event, array $data = []): self
+    {
+        if (!isset($this->listeners[$event])) return $this;
+        foreach ($this->listeners[$event] as $handler) {
+            try { $handler($data); }
+            catch (\Throwable $e) { $this->log("Event {$event}: " . $e->getMessage(), "error"); }
+        }
+        return $this;
+    }
+
+    // ======================== SCHEDULER ========================
+
+    /**
+     * Schedule a task. Supports cron expressions and named intervals.
+     *
+     * $app->schedule('daily', fn() => $app->cleanup());
+     * $app->schedule('0 3 * * *', fn() => $app->backup());
+     * $app->schedule('everyMinute', fn() => $app->cache('stats', computeStats()));
+     *
+     * Named: everyMinute, everyFiveMinutes, hourly, daily, weekly, monthly
+     */
+    public function schedule(string $expression, callable $task): self
+    {
+        $cron = match ($expression) {
+            'everyMinute'      => '* * * * *',
+            'everyFiveMinutes' => '*/5 * * * *',
+            'everyTenMinutes'  => '*/10 * * * *',
+            'everyThirtyMinutes' => '*/30 * * * *',
+            'hourly'           => '0 * * * *',
+            'daily'            => '0 3 * * *',
+            'weekly'           => '0 3 * * 0',
+            'monthly'          => '0 3 1 * *',
+            'yearly'           => '0 3 1 1 *',
+            default            => $expression,
+        };
+
+        $file = $this->storage('cache') . '/schedule/' . md5($cron . spl_object_id($task));
+        if (!is_dir(dirname($file))) mkdir(dirname($file), 0755, true);
+
+        file_put_contents($file, serialize(['cron' => $cron, 'handler' => $task]));
+
+        return $this;
+    }
+
+    /**
+     * Run due scheduled tasks. Called by bin/worker.
+     */
+    public function schedule_run(): array
+    {
+        $run = [];
+        $dir = $this->storage('cache') . '/schedule/';
+        if (!is_dir($dir)) return $run;
+
+        $now = new \DateTime();
+        foreach (glob($dir . '*') as $file) {
+            $task = unserialize(file_get_contents($file));
+            if (!$task) continue;
+
+            if ($this->cron_matches($task['cron'], $now)) {
+                try {
+                    $handler = $task['handler'];
+                    $handler();
+                    $run[] = "Ran: {$task['cron']}";
+                    $this->log("Scheduler: ran {$task['cron']}", "info");
+                } catch (\Throwable $e) {
+                    $run[] = "Error: {$task['cron']} — {$e->getMessage()}";
+                    $this->log("Scheduler error: {$task['cron']} — {$e->getMessage()}", "error");
+                }
+            }
+        }
+
+        return $run;
+    }
+
+    private function cron_matches(string $cron, \DateTime $now): bool
+    {
+        $parts = explode(' ', $cron);
+        if (count($parts) !== 5) return false;
+
+        $map = [$now->format('i'), $now->format('H'), $now->format('d'), $now->format('m'), $now->format('w')];
+
+        foreach ($parts as $i => $p) {
+            if ($p === '*') continue;
+            foreach (explode(',', $p) as $v) {
+                if (strpos($v, '/') !== false) {
+                    [$step, $every] = explode('/', $v);
+                    if ($every === '*') $every = '0';
+                    if ((int)$map[$i] % (int)$every === 0) continue 2;
+                } elseif ((int)$map[$i] === (int)$v) {
+                    continue 2;
+                }
+            }
+            return false;
+        }
+        return true;
+    }
+
+    // ======================== QUEUE ========================
+
+    /**
+     * Push a job to the queue.
+     *
+     * $app->queue('send-email', ['to' => 'x@x.com']);
+     * $app->queue('cleanup', $data)->delay(300);
+     */
+    public function queue(string $job, array $payload = [], int $delay = 0): self
+    {
+        $dir = $this->storage('queue');
+        if (!is_dir($dir)) mkdir($dir, 0755, true);
+
+        $id = bin2hex(random_bytes(8));
+        $file = $dir . '/' . ($delay ? 'delayed_' : '') . $id . '.job';
+
+        file_put_contents($file, json_encode([
+            'id'        => $id,
+            'job'       => $job,
+            'payload'   => $payload,
+            'delay'     => $delay,
+            'available' => time() + $delay,
+            'attempts'  => 0,
+            'created'   => date('c'),
+        ]));
+
+        $this->emit('queue.pushed', ['job' => $job, 'id' => $id]);
+        $this->log("Queue: {$job} pushed", "debug");
+
+        return $this;
+    }
+
+    /**
+     * Process queued jobs. Called by bin/worker.
+     */
+    public function queue_work(int $timeout = 60, int $max = 0): array
+    {
+        $dir = $this->storage('queue');
+        if (!is_dir($dir)) return [];
+
+        $processed = [];
+        $deadline = time() + $timeout;
+        $count = 0;
+
+        while (time() < $deadline) {
+            $job = $this->queue_next();
+            if (!$job) break;
+
+            try {
+                $this->emit('queue.processing', ['job' => $job['job'], 'id' => $job['id']]);
+
+                if ($job['job'] === 'callback' && isset($job['payload']['callback'])) {
+                    $fn = $job['payload']['callback'];
+                    if (is_string($fn) && function_exists($fn)) $fn($job['payload']);
+                    elseif ($fn instanceof \Closure) $fn($job['payload']);
+                } else {
+                    $this->emit('queue.job.' . $job['job'], $job['payload']);
+                }
+
+                unlink($dir . '/' . basename($job['_file']));
+                $processed[] = "OK: {$job['job']} ({$job['id']})";
+                $this->log("Queue: {$job['job']} completed", "debug");
+            } catch (\Throwable $e) {
+                $job['attempts']++;
+                $job['_error'] = $e->getMessage();
+                $this->log("Queue error: {$job['job']} — {$e->getMessage()}", "error");
+
+                if ($job['attempts'] >= 3) {
+                    $failDir = $this->storage('failed');
+                    if (!is_dir($failDir)) mkdir($failDir, 0755, true);
+                    file_put_contents($failDir . '/' . $job['id'] . '.failed', json_encode($job));
+                    unlink($dir . '/' . basename($job['_file']));
+                    $processed[] = "FAILED: {$job['job']} ({$job['id']})";
+                } else {
+                    file_put_contents($dir . '/' . basename($job['_file']), json_encode($job));
+                }
+            }
+
+            $count++;
+            if ($max > 0 && $count >= $max) break;
+            usleep(100000);
+        }
+
+        return $processed;
+    }
+
+    /**
+     * Get the next available job from the queue.
+     */
+    private function queue_next(): ?array
+    {
+        $dir = $this->storage('queue');
+        if (!is_dir($dir)) return null;
+
+        $files = glob($dir . '/*.job');
+        if (empty($files)) return null;
+
+        usort($files, fn($a, $b) => filemtime($a) <=> filemtime($b));
+
+        foreach ($files as $file) {
+            $job = json_decode(file_get_contents($file), true);
+            if (!$job) continue;
+
+            if (($job['available'] ?? 0) > time()) continue;
+            $job['_file'] = $file;
+            return $job;
+        }
+
+        return null;
+    }
+
+    /**
+     * Get queue stats.
+     */
+    public function queue_status(): array
+    {
+        $dir = $this->storage('queue');
+        $fail = $this->storage('failed');
+
+        $pending = count(glob($dir . '/*.job'));
+        $pending += count(glob($dir . '/delayed_*.job'));
+        $failed = is_dir($fail) ? count(glob($fail . '/*.failed')) : 0;
+
+        return ['pending' => $pending, 'failed' => $failed];
+    }
+
+    /**
+     * Retry all failed jobs.
+     */
+    public function queue_retry(): int
+    {
+        $fail = $this->storage('failed');
+        $dir = $this->storage('queue');
+        if (!is_dir($fail)) return 0;
+
+        $count = 0;
+        foreach (glob($fail . '/*.failed') as $f) {
+            $job = json_decode(file_get_contents($f), true);
+            if ($job) {
+                $job['attempts'] = 0;
+                $job['available'] = time();
+                file_put_contents($dir . '/' . $job['id'] . '.job', json_encode($job));
+                unlink($f);
+                $count++;
+            }
+        }
+        return $count;
     }
 
     public function group(string $prefix, callable $handler): self
@@ -2321,6 +2590,7 @@ class Trindade
 
         $id = $this->db->insert('users', $data);
         $this->audit('user.created', ['email' => $data['email'], 'id' => $id]);
+        $this->emit('user.created', ['email' => $data['email'], 'id' => $id, 'role' => $data['role'] ?? 'user']);
         return $id;
     }
 
@@ -2360,6 +2630,7 @@ class Trindade
         }
         $this->lockout($email, true);
         $this->audit('user.login', ['email' => $email, 'id' => $user['id']]);
+        $this->emit('user.login', ['email' => $email, 'id' => $user['id'], 'role' => $user['role'] ?? 'user']);
         unset($user['password']);
         return $user;
     }
