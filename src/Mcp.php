@@ -299,6 +299,58 @@ class Mcp
                 'fn' => fn($args) => $this->tool_config_get($args),
             ],
 
+            // ── Supervisor ──
+            'supervisor' => [
+                'name' => 'supervisor',
+                'description' => 'Health check and system metrics: uptime, memory, routes, DB status, logs summary.',
+                'inputSchema' => ['type' => 'object', 'properties' => [], 'required' => []],
+                'fn' => fn($args) => $this->tool_supervisor(),
+            ],
+
+            // ── Users ──
+            'user_create' => [
+                'name' => 'user_create',
+                'description' => 'Create a new user in the database (hashes password with bcrypt).',
+                'inputSchema' => ['type' => 'object', 'properties' => [
+                    'email' => ['type' => 'string'], 'password' => ['type' => 'string'],
+                    'name' => ['type' => 'string'], 'role' => ['type' => 'string'],
+                ], 'required' => ['email', 'password']],
+                'fn' => fn($args) => $this->tool_user_create($args),
+            ],
+            'user_delete' => [
+                'name' => 'user_delete',
+                'description' => 'Delete a user by ID or email.',
+                'inputSchema' => ['type' => 'object', 'properties' => [
+                    'identifier' => ['type' => 'string', 'description' => 'User ID or email'],
+                ], 'required' => ['identifier']],
+                'fn' => fn($args) => $this->tool_user_delete($args),
+            ],
+            'user_list' => [
+                'name' => 'user_list',
+                'description' => 'List users with optional filter.',
+                'inputSchema' => ['type' => 'object', 'properties' => [
+                    'where' => ['type' => 'object', 'description' => 'Filter conditions, e.g. {"role":"admin"}'],
+                    'limit' => ['type' => 'integer'],
+                ], 'required' => []],
+                'fn' => fn($args) => $this->tool_user_list($args),
+            ],
+            'user_verify' => [
+                'name' => 'user_verify',
+                'description' => 'Verify user credentials. Returns user data (without password) or null.',
+                'inputSchema' => ['type' => 'object', 'properties' => [
+                    'email' => ['type' => 'string'], 'password' => ['type' => 'string'],
+                ], 'required' => ['email', 'password']],
+                'fn' => fn($args) => $this->tool_user_verify($args),
+            ],
+
+            // ── DB Connections ──
+            'db_connections' => [
+                'name' => 'db_connections',
+                'description' => 'List all active database connections.',
+                'inputSchema' => ['type' => 'object', 'properties' => [], 'required' => []],
+                'fn' => fn($args) => $this->tool_db_connections(),
+            ],
+
             // ── Cache / Storage ──
             'cache_clear' => [
                 'name' => 'cache_clear',
@@ -590,5 +642,39 @@ class Mcp
     {
         $app = $this->app();
         return $app->jwt($args['payload'], $args['expire'] ?? null);
+    }
+
+    private function tool_supervisor(): string
+    {
+        return json_encode($this->app()->supervisor(), JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
+    }
+
+    private function tool_user_create(array $args): string
+    {
+        $result = $this->app()->user_create($args);
+        return $result ? "User created. ID: {$result}" : "Failed to create user (duplicate email or missing data).";
+    }
+
+    private function tool_user_delete(array $args): string
+    {
+        $this->app()->user_delete($args['identifier']);
+        return "User deleted: {$args['identifier']}";
+    }
+
+    private function tool_user_list(array $args): string
+    {
+        $users = $this->app()->user_list($args['where'] ?? [], $args['limit'] ?? 50);
+        return json_encode($users, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
+    }
+
+    private function tool_user_verify(array $args): string
+    {
+        $user = $this->app()->user_verify($args['email'], $args['password']);
+        return $user ? json_encode($user, JSON_PRETTY_PRINT) : 'Invalid credentials.';
+    }
+
+    private function tool_db_connections(): string
+    {
+        return json_encode($this->app()->db_connections());
     }
 }

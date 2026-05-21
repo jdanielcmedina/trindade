@@ -699,6 +699,8 @@ class Trindade
     private int $code = 200;
 
     public $db = null;
+    private array $dbs = [];
+    private float $started;
     public $mail = null;
     public $ws = null;
 
@@ -717,6 +719,7 @@ class Trindade
 
     public function __construct(array $config = [], ?array $database = null)
     {
+        $this->started = microtime(true);
         try {
             $root = rtrim($config['root'] ?? dirname(getcwd()), '/\\') . DIRECTORY_SEPARATOR;
             unset($config['root']);
@@ -801,9 +804,18 @@ class Trindade
     private function init(): void
     {
         try {
-            if (isset($this->config['db'])) {
-                try { $this->db = new Database($this->config['db']); }
-                catch (\PDOException $e) {
+            // Multiple databases: config 'db' or 'databases' array
+            if (isset($this->config['databases'])) {
+                foreach ($this->config['databases'] as $name => $cfg) {
+                    try { $this->dbs[$name] = new Database($cfg); }
+                    catch (\PDOException $e) { $this->log("DB error: {$name}", "error"); }
+                }
+                $this->db = $this->dbs['default'] ?? ($this->dbs['main'] ?? reset($this->dbs));
+            } elseif (isset($this->config['db'])) {
+                try {
+                    $this->db = new Database($this->config['db']);
+                    $this->dbs['default'] = $this->db;
+                } catch (\PDOException $e) {
                     $this->log("DB error", "error");
                     $this->db = null;
                 }
@@ -2219,13 +2231,137 @@ class Trindade
 
     // ======================== DB ========================
 
-    public function db(): ?Database
+    /**
+     * Get database connection. Supports multiple named connections.
+     *
+     * $app->db()              → default connection
+     * $app->db('logs')        → named connection from 'databases' config
+     */
+    public function db(?string $name = null): ?Database
     {
+        if ($name) return $this->dbs[$name] ?? null;
+
         if ($this->db === null && isset($this->config['db'])) {
-            try { $this->db = new Database($this->config['db']); }
+            try { $this->db = new Database($this->config['db']); $this->dbs['default'] = $this->db; }
             catch (\PDOException $e) { $this->log("DB error", "error"); $this->db = null; }
         }
         return $this->db;
+    }
+
+    /**
+     * List all active database connections.
+     */
+    public function db_connections(): array { return array_keys($this->dbs); }
+
+    // ======================== SUPERVISOR ========================
+
+    /**
+     * Supervisor — health check and system metrics.
+     *
+     * $app->supervisor()      → full health report
+     */
+    public function supervisor(): array
+    {
+        $routes = 0;
+        foreach ($this->routes as $rs) $routes += count($rs);
+
+        $dbs = [];
+        foreach ($this->dbs as $name => $db) {
+            try { $db->query("SELECT 1")->fetch(); $dbs[$name] = 'connected'; }
+            catch (\Throwable $e) { $dbs[$name] = 'error: ' . $e->getMessage(); }
+        }
+
+        $storage = $this->storage();
+        $size = 0;
+        if (is_dir($storage)) {
+            foreach (new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator($storage, \RecursiveDirectoryIterator::SKIP_DOTS)) as $f) $size += $f->getSize();
+        }
+
+        $logs = [];
+        $logFile = ($this->paths['storage']['logs'] ?? '') . '/app.log';
+        if (file_exists($logFile)) {
+            $lines = array_slice(file($logFile, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES), -20);
+            $logs['last_20'] = $lines;
+            $logs['errors'] = count(array_filter($lines, fn($l) => stripos($l, '[error]') !== false));
+            $logs['warnings'] = count(array_filter($lines, fn($l) => stripos($l, '[warning]') !== false));
+        }
+
+        return [
+            'status'       => 'running',
+            'php'          => PHP_VERSION,
+            'uptime_sec'   => round(microtime(true) - $this->started, 1),
+            'memory_mb'    => round(memory_get_usage(true) / 1048576, 1),
+            'memory_peak'  => round(memory_get_peak_usage(true) / 1048576, 1),
+            'routes'       => $routes,
+            'databases'    => $dbs,
+            'storage_mb'   => round($size / 1048576, 2),
+            'debug'        => $this->config['debug'] ?? false,
+            'logs'         => $logs,
+        ];
+    }
+
+    // ======================== USER MANAGEMENT ========================
+
+    /**
+     * Create a user in the database.
+     *
+     * $app->user_create(['email' => 'a@a.com', 'password' => 'secret', 'name' => 'John', 'role' => 'admin'])
+     */
+    public function user_create(array $data): string|int|false
+    {
+        if (!$this->db) return false;
+        if (empty($data['email']) || empty($data['password'])) return false;
+
+        $exists = $this->db->has('users', ['email' => $data['email']]);
+        if ($exists) return false;
+
+        $data['password'] = $this->hash($data['password']);
+        if (!isset($data['created_at'])) $data['created_at'] = date('Y-m-d H:i:s');
+        if (!isset($data['updated_at'])) $data['updated_at'] = date('Y-m-d H:i:s');
+
+        $id = $this->db->insert('users', $data);
+        $this->audit('user.created', ['email' => $data['email'], 'id' => $id]);
+        return $id;
+    }
+
+    /**
+     * Delete a user by ID or email.
+     */
+    public function user_delete(int|string $identifier): bool
+    {
+        if (!$this->db) return false;
+        $where = is_numeric($identifier) ? ['id' => (int)$identifier] : ['email' => $identifier];
+        $this->db->delete('users', $where);
+        $this->audit('user.deleted', ['identifier' => $identifier]);
+        return true;
+    }
+
+    /**
+     * List users with optional filter.
+     */
+    public function user_list(array $where = [], int $limit = 50): array
+    {
+        if (!$this->db) return [];
+        return $this->db->select('users', ['id', 'email', 'name', 'role', 'created_at'], array_merge($where, ['LIMIT' => $limit]));
+    }
+
+    /**
+     * Verify user credentials. Returns user array or null.
+     */
+    public function user_verify(string $email, string $password): ?array
+    {
+        if (!$this->db) return null;
+        $user = $this->db->get('users', '*', ['email' => $email]);
+        if (!$user) return null;
+        if (!$this->check($password, $user['password'])) {
+            $this->lockout($email);
+            $this->audit('user.login_failed', ['email' => $email]);
+            return null;
+        }
+        $this->lockout($email, true);
+        $this->audit('user.login', ['email' => $email, 'id' => $user['id']]);
+        unset($user['password']);
+        return $user;
     }
 
     // ======================== DEBUG / DOCS ========================
