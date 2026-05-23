@@ -2,6 +2,39 @@
 namespace Trindade;
 
 /**
+ * Trindade Resource — consistent API response formatting.
+ *
+ * $app->resource($user)->only('id', 'name', 'email');
+ * $app->resource($users)->collection()->transform(fn($u) => [...]);
+ */
+class Resource
+{
+    private $data;
+    private bool $isCollection = false;
+
+    public function __construct($data) { $this->data = $data; }
+
+    public function collection(): self { $this->isCollection = true; return $this; }
+    public function only(string ...$keys): array { return $this->transform(fn($item) => array_intersect_key((array)$item, array_flip($keys))); }
+    public function except(string ...$keys): array { return $this->transform(fn($item) => array_diff_key((array)$item, array_flip($keys))); }
+    public function add(array $extra): array { return $this->transform(fn($item) => array_merge((array)$item, $extra)); }
+
+    public function transform(callable $fn): array
+    {
+        if ($this->isCollection) return array_map(fn($item) => $fn((array)$item), (array)$this->data);
+        return $fn((array)$this->data);
+    }
+
+    public function paginate(int $total, int $page = 1, int $perPage = 10): array
+    {
+        return [
+            'data'  => $this->data,
+            'meta'  => ['total' => $total, 'page' => $page, 'per_page' => $perPage, 'pages' => (int)ceil($total / max($perPage, 1))],
+        ];
+    }
+}
+
+/**
  * Trindade Collection
  *
  * Fluent array wrapper. Chain methods to transform data.
@@ -2062,19 +2095,6 @@ class Trindade
 
     // ======================== CACHE / STORAGE ========================
 
-    public function cache(string $key, $value = null, ?int $ttl = null)
-    {
-        $file = $this->storage('cache') . '/' . md5($key) . '.cache';
-        if ($value === null) {
-            if (!file_exists($file)) return null;
-            $data = json_decode(file_get_contents($file), true);
-            if (($data['expires'] ?? 0) < time()) { unlink($file); return null; }
-            return $data['value'] ?? null;
-        }
-        $ttl = $ttl ?? $this->config['cache']['ttl'] ?? 3600;
-        if (is_dir(dirname($file))) file_put_contents($file, json_encode(['value' => $value, 'expires' => time() + $ttl]), LOCK_EX);
-        return $this;
-    }
 
     public function clear(string $type = 'cache'): self
     {
@@ -3242,6 +3262,290 @@ class Trindade
     {
         return new Collection($items);
     }
+
+    /**
+     * API resource formatting.
+     *
+     * $app->resource($user)->only('id', 'name', 'email');
+     */
+    public function resource($data): Resource
+    {
+        return new Resource($data);
+    }
+
+    // ======================== I18N ========================
+
+    /**
+     * Translate a key. Loads JSON files from lang/{locale}/.
+     *
+     * $app->trans('auth.failed', [], 'pt');
+     * $app->trans('validation.required', ['field' => 'Email']);
+     */
+    public function trans(string $key, array $replace = [], ?string $locale = null): string
+    {
+        $locale = $locale ?? $this->config['locale'] ?? 'en';
+        $file = $this->paths['root'] . "lang/{$locale}.json";
+        $translations = [];
+
+        if (file_exists($file)) {
+            $translations = json_decode(file_get_contents($file), true) ?? [];
+        }
+
+        // Dot notation: 'auth.failed' → $translations['auth']['failed']
+        $value = $translations[$key] ?? $key;
+
+        foreach ($replace as $k => $v) {
+            $value = str_replace(':' . $k, $v, $value);
+        }
+
+        return $value;
+    }
+
+    // ======================== CACHE (REDIS) ========================
+
+    /**
+     * Cache with optional Redis driver.
+     */
+    public function cache(string $key, $value = null, ?int $ttl = null)
+    {
+        $driver = $this->config['cache']['driver'] ?? 'file';
+
+        if ($driver === 'redis') {
+            return $this->cache_redis($key, $value, $ttl);
+        }
+
+        // Default: file-based
+        $file = $this->storage('cache') . '/' . md5($key) . '.cache';
+        if ($value === null) {
+            if (!file_exists($file)) return null;
+            $data = json_decode(file_get_contents($file), true);
+            if (($data['expires'] ?? 0) < time()) { unlink($file); return null; }
+            return $data['value'] ?? null;
+        }
+        $ttl = $ttl ?? $this->config['cache']['ttl'] ?? 3600;
+        if (is_dir(dirname($file))) file_put_contents($file, json_encode(['value' => $value, 'expires' => time() + $ttl]), LOCK_EX);
+        return $this;
+    }
+
+    private $redis = null;
+
+    private function cache_redis(string $key, $value = null, ?int $ttl = null)
+    {
+        if (!$this->redis) {
+            $cfg = $this->config['cache'] ?? [];
+            $host = $cfg['host'] ?? '127.0.0.1';
+            $port = (int)($cfg['port'] ?? 6379);
+            $this->redis = new \Redis();
+            $this->redis->connect($host, $port);
+            if (!empty($cfg['password'])) $this->redis->auth($cfg['password']);
+        }
+
+        if ($value === null) {
+            $data = $this->redis->get($key);
+            return $data ? json_decode($data, true) : null;
+        }
+
+        $ttl = $ttl ?? $this->config['cache']['ttl'] ?? 3600;
+        $this->redis->setex($key, $ttl, json_encode($value));
+        return $this;
+    }
+
+    // ======================== STORAGE (S3) ========================
+
+    /**
+     * Cloud storage — S3-compatible. Falls back to local files.
+     *
+     * $app->store('bucket/file.txt', 'content');
+     * $content = $app->store('bucket/file.txt');
+     */
+    public function store(string $path, ?string $content = null)
+    {
+        $driver = $this->config['storage']['driver'] ?? 'local';
+
+        if ($content === null) {
+            if ($driver === 's3') return $this->store_s3_get($path);
+            $full = $this->storage('uploads') . '/' . ltrim($path, '/');
+            return file_exists($full) ? file_get_contents($full) : null;
+        }
+
+        if ($driver === 's3') return $this->store_s3_put($path, $content);
+        $full = $this->storage('uploads') . '/' . ltrim($path, '/');
+        $dir = dirname($full);
+        if (!is_dir($dir)) mkdir($dir, 0755, true);
+        return file_put_contents($full, $content);
+    }
+
+    private function store_s3_put(string $path, string $content): bool
+    {
+        $cfg = $this->config['storage'];
+        $method = 'PUT';
+        $date = gmdate('D, d M Y H:i:s \G\M\T');
+        $payload = hash('sha256', $content);
+        $region = $cfg['region'] ?? 'us-east-1';
+        $service = 's3';
+        $host = $cfg['endpoint'] ?? "{$cfg['bucket']}.s3.{$region}.amazonaws.com";
+
+        $headers = [
+            'Host: ' . $host,
+            'Content-Type: application/octet-stream',
+            'x-amz-content-sha256: ' . $payload,
+            'x-amz-date: ' . gmdate('Ymd\THis\Z'),
+        ];
+
+        $ch = curl_init("https://{$host}/{$path}");
+        curl_setopt_array($ch, [
+            CURLOPT_CUSTOMREQUEST => $method,
+            CURLOPT_HTTPHEADER => $headers,
+            CURLOPT_POSTFIELDS => $content,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_HEADER => true,
+        ]);
+        $response = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+        return $httpCode === 200;
+    }
+
+    private function store_s3_get(string $path): ?string
+    {
+        $cfg = $this->config['storage'];
+        $region = $cfg['region'] ?? 'us-east-1';
+        $host = $cfg['endpoint'] ?? "{$cfg['bucket']}.s3.{$region}.amazonaws.com";
+
+        $ch = curl_init("https://{$host}/{$path}");
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        $r = curl_exec($ch);
+        $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+        return $code === 200 ? $r : null;
+    }
+
+    /**
+     * Public URL for a stored file.
+     */
+    public function store_url(string $path): string
+    {
+        $driver = $this->config['storage']['driver'] ?? 'local';
+        if ($driver === 's3') {
+            $cfg = $this->config['storage'];
+            $region = $cfg['region'] ?? 'us-east-1';
+            return ($cfg['endpoint'] ?? "https://{$cfg['bucket']}.s3.{$region}.amazonaws.com") . '/' . $path;
+        }
+        return '/uploads/' . ltrim($path, '/');
+    }
+
+    // ======================== AI ========================
+
+    /**
+     * AI integration — OpenRouter, OpenAI, or any OpenAI-compatible API.
+     *
+     * $app->ai()->chat('What is PHP?');
+     * $app->ai()->model('openai/gpt-4o')->chat('Explain REST');
+     * $app->ai()->system('You are helpful')->chat('Hi');
+     */
+    public function ai(): AiClient
+    {
+        return new AiClient($this->config['ai'] ?? []);
+    }
+}
+
+/**
+ * Trindade AI Client — OpenRouter, OpenAI, Claude, any OpenAI-compatible API.
+ *
+ * $app->ai()->system('You are helpful')->chat('What is PHP?');
+ * $app->ai()->model('openai/gpt-4o')->temperature(0.7)->chat($prompt);
+ */
+class AiClient
+{
+    private array $config;
+    private array $messages = [];
+    private string $model;
+    private float $temperature = 0.7;
+    private int $maxTokens = 1024;
+
+    public function __construct(array $config = [])
+    {
+        $this->config = $config;
+        $this->model = $config['model'] ?? 'openai/gpt-4o-mini';
+    }
+
+    public function model(string $model): self { $this->model = $model; return $this; }
+    public function temperature(float $t): self { $this->temperature = $t; return $this; }
+    public function maxTokens(int $n): self { $this->maxTokens = $n; return $this; }
+    public function system(string $prompt): self { $this->messages[] = ['role' => 'system', 'content' => $prompt]; return $this; }
+
+    /**
+     * Send a chat message and get the response.
+     *
+     * $reply = $app->ai()->system('You are a PHP expert')->chat('Write a hello world');
+     */
+    public function chat(string $prompt): string
+    {
+        $this->messages[] = ['role' => 'user', 'content' => $prompt];
+
+        $provider = $this->config['provider'] ?? 'openrouter';
+        $url = match ($provider) {
+            'openai'    => 'https://api.openai.com/v1/chat/completions',
+            'claude'    => 'https://api.anthropic.com/v1/messages',
+            default     => 'https://openrouter.ai/api/v1/chat/completions',
+        };
+
+        $key = $this->config['key'] ?? $this->config['api_key'] ?? '';
+        $headers = [
+            'Content-Type: application/json',
+            'Authorization: Bearer ' . $key,
+        ];
+
+        if ($provider === 'openrouter') {
+            $headers[] = 'HTTP-Referer: https://trindade.dev';
+            $headers[] = 'X-Title: Trindade App';
+        }
+
+        $body = json_encode([
+            'model'       => $this->model,
+            'messages'    => $this->messages,
+            'temperature' => $this->temperature,
+            'max_tokens'  => $this->maxTokens,
+        ]);
+
+        $ch = curl_init($url);
+        curl_setopt_array($ch, [
+            CURLOPT_POST => true,
+            CURLOPT_HTTPHEADER => $headers,
+            CURLOPT_POSTFIELDS => $body,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT => 60,
+        ]);
+
+        $response = curl_exec($ch);
+        $status = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+
+        if ($status !== 200) return "AI error: HTTP {$status} — {$response}";
+
+        $data = json_decode($response, true);
+
+        // OpenAI / OpenRouter format
+        $content = $data['choices'][0]['message']['content'] ?? null;
+        if ($content) {
+            $this->messages[] = ['role' => 'assistant', 'content' => $content];
+            return $content;
+        }
+
+        // Claude format
+        $content = $data['content'][0]['text'] ?? null;
+        if ($content) {
+            $this->messages[] = ['role' => 'assistant', 'content' => $content];
+            return $content;
+        }
+
+        return "AI response: " . json_encode($data);
+    }
+
+    /**
+     * Get all messages (for debugging or saving context).
+     */
+    public function messages(): array { return $this->messages; }
 }
 
 /**
