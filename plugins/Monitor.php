@@ -10,6 +10,7 @@ class Monitor
         $this->app = $app;
         $app->group('/monitor', function () use ($app) {
             $app->on('GET /', [$this, 'index']);
+            $app->on('POST /api/login', [$this, 'api_login']);
             $app->on('GET /stream', [$this, 'stream']);
             $app->on('GET /api/stats', [$this, 'api_stats']);
             $app->on('GET /api/logs', [$this, 'api_logs']);
@@ -18,6 +19,23 @@ class Monitor
             $app->on('GET /api/requests', [$this, 'api_requests']);
             $app->notfound([$this, 'index']);
         });
+    }
+
+    public function api_login()
+    {
+        $cfg = $this->app->config('monitor') ?? [];
+        $user = $cfg['user'] ?? 'admin';
+        $pass = $cfg['password'] ?? password_hash('trindade', PASSWORD_BCRYPT);
+
+        $inputUser = $this->app->request('user');
+        $inputPass = $this->app->request('password');
+
+        if ($inputUser === $user && password_verify($inputPass, $pass)) {
+            $this->app->session('monitor_auth', true);
+            echo json_encode(['ok' => true]);
+        } else {
+            echo json_encode(['ok' => false, 'error' => 'Credenciais invalidas']);
+        }
     }
 
     public function index()
