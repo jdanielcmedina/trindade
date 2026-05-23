@@ -1260,18 +1260,92 @@ class Trindade
     }
 
     /**
-     * Emit an event — triggers all registered listeners.
+     * Emit an event — triggers all registered listeners and broadcasts to WebSocket.
      *
      * $app->emit('user.created', ['email' => 'x@x.com', 'id' => 42]);
      */
     public function emit(string $event, array $data = []): self
     {
+        // Broadcast to WebSocket clients (if ws plugin loaded)
+        if (isset($this->plugins['websocket'])) {
+            try { $this->plugins['websocket']->broadcast($event, $data); } catch (\Throwable $e) {}
+        }
+
+        // Trigger PHP listeners
         if (!isset($this->listeners[$event])) return $this;
         foreach ($this->listeners[$event] as $handler) {
             try { $handler($data); }
             catch (\Throwable $e) { $this->log("Event {$event}: " . $e->getMessage(), "error"); }
         }
         return $this;
+    }
+
+    // ======================== SSE (Server-Sent Events) ========================
+
+    /**
+     * Start a Server-Sent Events stream. Keeps the connection open and sends events.
+     *
+     * $app->sse(function ($send) use ($app) {
+     *     while (true) {
+     *         $send('message', $app->db->select('events', '*', ['id[>]' => $lastId]));
+     *         sleep(1);
+     *     }
+     * });
+     */
+    public function sse(callable $handler, int $retry = 3000): void
+    {
+        header('Content-Type: text/event-stream');
+        header('Cache-Control: no-cache');
+        header('Connection: keep-alive');
+        header('X-Accel-Buffering: no');
+
+        if (ob_get_level()) ob_end_flush();
+
+        $send = function (string $event, $data) use ($retry) {
+            echo "event: {$event}\n";
+            echo 'data: ' . (is_string($data) ? $data : json_encode($data, JSON_UNESCAPED_UNICODE)) . "\n";
+            echo "retry: {$retry}\n\n";
+            if (ob_get_level()) ob_flush();
+            flush();
+        };
+
+        // Send initial connection event
+        $send('connected', ['time' => date('c')]);
+
+        try {
+            $handler($send);
+        } catch (\Throwable $e) {
+            $send('error', $e->getMessage());
+        }
+    }
+
+    /**
+     * Subscribe to events via SSE (simpler API — auto-subscribes to Trindade events).
+     *
+     * $app->sse_events();  // streams all emitted events
+     */
+    public function sse_events(array $events = ['*']): void
+    {
+        $this->sse(function ($send) use ($events) {
+            $lastId = 0;
+            $eventLog = $this->storage('cache') . '/_sse_events.log';
+
+            while (true) {
+                if (file_exists($eventLog)) {
+                    $lines = file($eventLog, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+                    if ($lines) {
+                        foreach ($lines as $line) {
+                            $data = json_decode($line, true);
+                            if ($data && ($events === ['*'] || in_array($data['event'] ?? '', $events))) {
+                                $send($data['event'] ?? 'message', $data['data'] ?? $data);
+                            }
+                        }
+                        file_put_contents($eventLog, '');
+                    }
+                }
+                usleep(500000); // 0.5s
+            }
+        });
     }
 
     // ======================== SCHEDULER ========================

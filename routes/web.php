@@ -60,7 +60,17 @@ $app->on('POST /mail', function () use ($app) {
     return $ok ? $app->success(null, 'Sent') : $app->error($app->mail->errors()[0] ?? 'Failed');
 });
 
-// ── Upload ──────────────────────────────────────
+// ── SSE (Server-Sent Events) ───────────────────
+$app->on('GET /events', function () use ($app) {
+    $app->sse(function ($send) use ($app) {
+        $i = 0;
+        while ($i < 100) {
+            $send('ping', ['time' => date('H:i:s'), 'count' => $i]);
+            sleep(1);
+            $i++;
+        }
+    });
+});
 $app->on('POST /upload', function () use ($app) {
     $file = $app->upload('file');
     return $file ? $app->success(['file' => $file]) : $app->error('Upload failed');
