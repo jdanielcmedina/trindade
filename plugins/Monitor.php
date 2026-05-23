@@ -17,7 +17,7 @@ class Monitor
             $app->on('GET /api/db', [$this, 'api_db']);
             $app->on('GET /api/queue', [$this, 'api_queue']);
             $app->on('GET /api/requests', [$this, 'api_requests']);
-            $app->notfound([$this, 'index']);
+            $app->notfound(fn() => $this->index());
         });
     }
 
