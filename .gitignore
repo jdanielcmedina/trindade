@@ -1,7 +1,8 @@
 /vendor/
 /storage/
 /node_modules/
-/monitor-ui/
+/monitor-ui/node_modules/
+/monitor-ui/dist/
 /public/monitor/
 .env
 .env.backup
