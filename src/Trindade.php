@@ -2,6 +2,64 @@
 namespace Trindade;
 
 /**
+ * Trindade Collection
+ *
+ * Fluent array wrapper. Chain methods to transform data.
+ *
+ * collect($rows)->pluck('email')->unique()->values()->all();
+ */
+class Collection implements \ArrayAccess, \IteratorAggregate, \Countable
+{
+    private array $items;
+
+    public function __construct(array $items = []) { $this->items = $items; }
+
+    public static function make(array $items = []): self { return new self($items); }
+
+    public function all(): array { return $this->items; }
+    public function toArray(): array { return $this->items; }
+    public function count(): int { return count($this->items); }
+    public function isEmpty(): bool { return empty($this->items); }
+    public function isNotEmpty(): bool { return !empty($this->items); }
+    public function first($default = null) { return $this->items[0] ?? $default; }
+    public function last($default = null) { $c = count($this->items); return $c > 0 ? $this->items[$c-1] : $default; }
+
+    public function map(callable $fn): self { return new self(array_map($fn, $this->items)); }
+    public function filter(?callable $fn = null): self { return new self(array_filter($this->items, $fn ?? fn($v) => !empty($v))); }
+    public function pluck(string $key): self { return new self(array_column($this->items, $key)); }
+    public function unique(): self { return new self(array_unique($this->items, SORT_REGULAR)); }
+    public function values(): self { return new self(array_values($this->items)); }
+    public function keys(): self { return new self(array_keys($this->items)); }
+    public function take(int $n): self { return new self(array_slice($this->items, 0, $n)); }
+    public function skip(int $n): self { return new self(array_slice($this->items, $n)); }
+    public function sort(?callable $fn = null): self { $items = $this->items; $fn ? usort($items, $fn) : sort($items); return new self($items); }
+    public function sortBy(string $key, bool $desc = false): self { $items = $this->items; usort($items, fn($a, $b) => ($a[$key] ?? 0) <=> ($b[$key] ?? 0)); return new self($desc ? array_reverse($items) : $items); }
+    public function sortByDesc(string $key): self { return $this->sortBy($key, true); }
+    public function groupBy(string $key): self { $r = []; foreach ($this->items as $v) $r[$v[$key] ?? ''][] = $v; return new self($r); }
+    public function sum(?string $key = null): float|int { return $key ? array_sum(array_column($this->items, $key)) : array_sum($this->items); }
+    public function avg(?string $key = null): float { $c = count($this->items); return $c ? ($this->sum($key) / $c) : 0; }
+    public function implode(string $glue, ?string $key = null): string { return $key ? implode($glue, array_column($this->items, $key)) : implode($glue, $this->items); }
+    public function flatten(): self { $r = []; array_walk_recursive($this->items, fn($v) => $r[] = $v); return new self($r); }
+    public function each(callable $fn): self { foreach ($this->items as $k => $v) $fn($v, $k); return $this; }
+    public function reduce(callable $fn, $initial = null) { return array_reduce($this->items, $fn, $initial); }
+    public function where(string $key, $value): self { return new self(array_filter($this->items, fn($v) => ($v[$key] ?? null) === $value)); }
+    public function whereIn(string $key, array $values): self { return new self(array_filter($this->items, fn($v) => in_array($v[$key] ?? null, $values, true))); }
+
+    // ArrayAccess
+    public function offsetExists(mixed $offset): bool { return isset($this->items[$offset]); }
+    public function offsetGet(mixed $offset): mixed { return $this->items[$offset] ?? null; }
+    public function offsetSet(mixed $offset, mixed $value): void { if ($offset === null) $this->items[] = $value; else $this->items[$offset] = $value; }
+    public function offsetUnset(mixed $offset): void { unset($this->items[$offset]); }
+
+    // IteratorAggregate
+    public function getIterator(): \ArrayIterator { return new \ArrayIterator($this->items); }
+
+    // JSON
+    public function toJson(): string { return json_encode($this->items, JSON_UNESCAPED_UNICODE); }
+    public function __toString(): string { return $this->toJson(); }
+}
+
+/**
  * Trindade Database
  *
  * Full Medoo-compatible PDO wrapper. Zero external dependency.
@@ -1582,9 +1640,10 @@ class Trindade
         return null;
     }
 
-    public function error(string $msg = 'Not found', int $code = 404)
+    public function error(string|array $msg = 'Not found', int $code = 404)
     {
-        return $this->response(['error' => true, 'message' => $msg], 'json', $code);
+        $payload = is_array($msg) ? array_merge(['error' => true], $msg) : ['error' => true, 'message' => $msg];
+        return $this->response($payload, 'json', $code);
     }
 
     public function success($data = null, string $msg = 'Success')
@@ -2044,17 +2103,69 @@ class Trindade
         $errors = []; $clean = [];
 
         foreach ($rules as $field => $rule) {
-            $parts = explode('|', $rule);
+            $parts = is_array($rule) ? $rule : explode('|', $rule);
             $value = $data[$field] ?? null;
 
             foreach ($parts as $r) {
+                if (is_callable($r)) { if (!$r($value)) $errors[$field][] = "{$field} validation failed"; continue; }
                 if ($r === 'required' && ($value === null || $value === '')) { $errors[$field][] = "{$field} is required"; continue; }
-                if ($value === null && $r !== 'required') continue;
+                if ($value === null && $r !== 'required' && !str_starts_with($r, 'required_with:')) continue;
+
+                // string rules
                 if (strpos($r, 'min:') === 0) { $min = (int)substr($r, 4); if (is_string($value) && mb_strlen($value) < $min) $errors[$field][] = "{$field} min {$min}"; }
-                if (strpos($r, 'max:') === 0) { $max = (int)substr($r, 4); if (is_string($value) && mb_strlen($value) > $max) $errors[$field][] = "{$field} max {$max}"; }
-                if ($r === 'email' && !filter_var($value, FILTER_VALIDATE_EMAIL)) $errors[$field][] = "{$field} invalid email";
-                if ($r === 'numeric' && !is_numeric($value)) $errors[$field][] = "{$field} must be numeric";
-                if ($r === 'url' && !filter_var($value, FILTER_VALIDATE_URL)) $errors[$field][] = "{$field} invalid URL";
+                elseif (strpos($r, 'max:') === 0) { $max = (int)substr($r, 4); if (is_string($value) && mb_strlen($value) > $max) $errors[$field][] = "{$field} max {$max}"; }
+                elseif ($r === 'string') { if (!is_string($value)) $errors[$field][] = "{$field} must be a string"; }
+                elseif ($r === 'email' && !filter_var($value, FILTER_VALIDATE_EMAIL)) $errors[$field][] = "{$field} invalid email";
+                elseif ($r === 'numeric' && !is_numeric($value)) $errors[$field][] = "{$field} must be numeric";
+                elseif ($r === 'integer' && !is_int($value) && !ctype_digit((string)$value)) $errors[$field][] = "{$field} must be an integer";
+                elseif ($r === 'url' && !filter_var($value, FILTER_VALIDATE_URL)) $errors[$field][] = "{$field} invalid URL";
+                elseif ($r === 'boolean') { if (!in_array($value, [true, false, 0, 1, '0', '1'], true)) $errors[$field][] = "{$field} must be boolean"; }
+                elseif ($r === 'array' && !is_array($value)) $errors[$field][] = "{$field} must be an array";
+                elseif ($r === 'date' && !strtotime((string)$value)) $errors[$field][] = "{$field} invalid date";
+                elseif ($r === 'json') { json_decode((string)$value); if (json_last_error() !== JSON_ERROR_NONE) $errors[$field][] = "{$field} invalid JSON"; }
+                elseif ($r === 'alpha') { if (!ctype_alpha((string)$value)) $errors[$field][] = "{$field} must be alpha"; }
+                elseif ($r === 'alphanumeric') { if (!ctype_alnum((string)$value)) $errors[$field][] = "{$field} must be alphanumeric"; }
+
+                // confirmed: checks field_confirmation
+                elseif ($r === 'confirmed') { if ($value !== ($data[$field . '_confirmation'] ?? null)) $errors[$field][] = "{$field} does not match confirmation"; }
+
+                // in:value1,value2,...
+                elseif (strpos($r, 'in:') === 0) { $allowed = explode(',', substr($r, 3)); if (!in_array($value, $allowed, true)) $errors[$field][] = "{$field} must be one of: " . implode(', ', $allowed); }
+
+                // not_in:value1,value2
+                elseif (strpos($r, 'not_in:') === 0) { $blocked = explode(',', substr($r, 7)); if (in_array($value, $blocked, true)) $errors[$field][] = "{$field} cannot be: " . implode(', ', $blocked); }
+
+                // exists:table,column — checks DB
+                elseif (strpos($r, 'exists:') === 0 && $this->db) { [$t, $c] = explode(',', substr($r, 7)) + [1 => 'id']; if (!$this->db->has($t, [$c => $value])) $errors[$field][] = "{$field} not found"; }
+
+                // unique:table,column,except_id
+                elseif (strpos($r, 'unique:') === 0 && $this->db) { $parts = explode(',', substr($r, 7)); $t = $parts[0]; $c = $parts[1] ?? $field; $except = $parts[2] ?? null; $where = [$c => $value]; if ($except) $where['id[!]'] = (int)$except; if ($this->db->has($t, $where)) $errors[$field][] = "{$field} already exists"; }
+
+                // required_with:other_field
+                elseif (strpos($r, 'required_with:') === 0) { $other = substr($r, 15); if (!empty($data[$other]) && empty($value)) $errors[$field][] = "{$field} is required with {$other}"; }
+
+                // before:date, after:date
+                elseif (strpos($r, 'before:') === 0) { $d = substr($r, 7); if (strtotime((string)$value) >= strtotime($d)) $errors[$field][] = "{$field} must be before {$d}"; }
+                elseif (strpos($r, 'after:') === 0) { $d = substr($r, 6); if (strtotime((string)$value) <= strtotime($d)) $errors[$field][] = "{$field} must be after {$d}"; }
+
+                // same:other_field
+                elseif (strpos($r, 'same:') === 0) { $other = substr($r, 5); if ($value !== ($data[$other] ?? null)) $errors[$field][] = "{$field} must match {$other}"; }
+
+                // different:other_field
+                elseif (strpos($r, 'different:') === 0) { $other = substr($r, 10); if ($value === ($data[$other] ?? null)) $errors[$field][] = "{$field} must differ from {$other}"; }
+
+                // regex:pattern
+                elseif (strpos($r, 'regex:') === 0) { if (!preg_match(substr($r, 6), (string)$value)) $errors[$field][] = "{$field} format invalid"; }
+
+                // starts_with:prefix, ends_with:suffix
+                elseif (strpos($r, 'starts_with:') === 0) { $pfx = substr($r, 12); if (!str_starts_with((string)$value, $pfx)) $errors[$field][] = "{$field} must start with {$pfx}"; }
+                elseif (strpos($r, 'ends_with:') === 0) { $sfx = substr($r, 10); if (!str_ends_with((string)$value, $sfx)) $errors[$field][] = "{$field} must end with {$sfx}"; }
+
+                // file / image validation
+                elseif ($r === 'file') { if (!isset($_FILES[$field]) || $_FILES[$field]['error'] !== UPLOAD_ERR_OK) $errors[$field][] = "{$field} must be a valid file"; }
+                elseif ($r === 'image') { if (!isset($_FILES[$field]) || !str_starts_with($_FILES[$field]['type'] ?? '', 'image/')) $errors[$field][] = "{$field} must be an image"; }
+                elseif (strpos($r, 'mimes:') === 0) { $allowed = explode(',', substr($r, 6)); $ext = strtolower(pathinfo($_FILES[$field]['name'] ?? '', PATHINFO_EXTENSION)); if (!in_array($ext, $allowed)) $errors[$field][] = "{$field} type must be: " . implode(', ', $allowed); }
+                elseif (strpos($r, 'size:') === 0) { $max = (int)substr($r, 5) * 1024; if (($_FILES[$field]['size'] ?? 0) > $max) $errors[$field][] = "{$field} max " . ($max/1024) . "KB"; }
             }
             if (!isset($errors[$field]) && isset($data[$field])) $clean[$field] = $this->sanitize($value);
         }
@@ -3034,4 +3145,96 @@ class Trindade
 
     public function __set(string $name, $value): void { $this->{$name} = $value; }
     public function __get(string $name) { return $this->plugins[$name] ?? $this->{$name} ?? null; }
+
+    // ======================== TESTING ========================
+
+    /**
+     * HTTP testing helper.
+     *
+     * $app->test('GET /users')->assertOk()->assertJson();
+     * $app->test('POST /users', ['name' => 'John'])->assertCreated();
+     */
+    public function test(string $route, array $data = []): TestCase
+    {
+        return new TestCase($this, $route, $data);
+    }
+
+    /**
+     * Wrap an array in a Collection for fluent manipulation.
+     *
+     * $app->collect($rows)->pluck('email')->unique()->values()->all();
+     */
+    public function collect(array $items = []): Collection
+    {
+        return new Collection($items);
+    }
+}
+
+/**
+ * Trindade TestCase — chainable HTTP assertions.
+ */
+class TestCase
+{
+    private Trindade $app;
+    private string $route;
+    private array $data;
+    private int $status = 200;
+    private string $body = '';
+    private array $headers = [];
+    private ?array $json = null;
+    private ?string $token = null;
+
+    public function __construct(Trindade $app, string $route, array $data = [])
+    {
+        $this->app = $app;
+        $this->route = $route;
+        $this->data = $data;
+        $this->run();
+    }
+
+    public function withToken(string $token): self { $this->token = $token; return $this->run(); }
+
+    public function withHeaders(array $headers): self { $this->headers = $headers; return $this->run(); }
+
+    private function run(): self
+    {
+        [$method, $path] = explode(' ', $this->route, 2) + [1 => '/'];
+
+        $_SERVER['REQUEST_METHOD'] = strtoupper($method);
+        $_SERVER['REQUEST_URI'] = $path;
+        $_SERVER['HTTP_HOST'] = 'localhost';
+        $_GET = []; $_POST = $this->data;
+
+        if ($this->token) {
+            $_SERVER['HTTP_AUTHORIZATION'] = 'Bearer ' . $this->token;
+        }
+
+        foreach ($this->headers as $k => $v) {
+            $_SERVER['HTTP_' . strtoupper(str_replace('-', '_', $k))] = $v;
+        }
+
+        ob_start();
+        $this->app->run();
+        $this->body = ob_get_clean();
+        $this->status = http_response_code() ?: 200;
+
+        $decoded = json_decode($this->body, true);
+        if (json_last_error() === JSON_ERROR_NONE) $this->json = $decoded;
+
+        return $this;
+    }
+
+    public function assertOk(): self { return $this->assertStatus(200); }
+    public function assertCreated(): self { return $this->assertStatus(201); }
+    public function assertNoContent(): self { return $this->assertStatus(204); }
+    public function assertUnauthorized(): self { return $this->assertStatus(401); }
+    public function assertForbidden(): self { return $this->assertStatus(403); }
+    public function assertNotFound(): self { return $this->assertStatus(404); }
+    public function assertStatus(int $code): self { assert($this->status === $code, "Expected status {$code}, got {$this->status}"); return $this; }
+
+    public function assertJson(): self { assert($this->json !== null, 'Response is not valid JSON'); return $this; }
+    public function assertJsonCount(int $count): self { $this->assertJson(); assert(count($this->json) === $count, "Expected {$count} items, got " . count($this->json)); return $this; }
+    public function assertJsonPath(string $path, $expected): self { $this->assertJson(); $val = $this->json; foreach (explode('.', $path) as $k) $val = $val[$k] ?? null; assert($val === $expected, "Expected '{$expected}' at {$path}, got " . json_encode($val)); return $this; }
+    public function assertSee(string $text): self { assert(str_contains($this->body, $text), "Text '{$text}' not found in response"); return $this; }
+    public function assertHeader(string $key, string $value): self { $headers = xdebug_get_headers(); assert(in_array("{$key}: {$value}", $headers), "Header {$key}: {$value} not found"); return $this; }
 }
