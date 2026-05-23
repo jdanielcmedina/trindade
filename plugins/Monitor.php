@@ -16,11 +16,33 @@ class Monitor
             $app->on('GET /api/db', [$this, 'api_db']);
             $app->on('GET /api/queue', [$this, 'api_queue']);
             $app->on('GET /api/requests', [$this, 'api_requests']);
+            $app->notfound([$this, 'index']);
         });
     }
 
     public function index()
     {
+        $uri = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
+
+        // Serve static assets from monitor-ui/dist/
+        if (str_starts_with($uri, '/monitor/assets/')) {
+            $file = $this->app->path('root') . 'monitor-ui/dist' . substr($uri, 8);
+            if (file_exists($file) && !is_dir($file)) {
+                $ext = pathinfo($file, PATHINFO_EXTENSION);
+                $mimes = ['js' => 'application/javascript', 'css' => 'text/css', 'svg' => 'image/svg+xml'];
+                header('Content-Type: ' . ($mimes[$ext] ?? 'application/octet-stream'));
+                header('Cache-Control: public, max-age=31536000');
+                readfile($file);
+                exit;
+            }
+        }
+
+        // Serve React build
+        $dist = $this->app->path('root') . 'monitor-ui/dist/index.html';
+        if (file_exists($dist)) {
+            echo file_get_contents($dist);
+            return;
+        }
         $this->render();
     }
 

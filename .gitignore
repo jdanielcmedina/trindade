@@ -1,7 +1,8 @@
 /vendor/
 /storage/
 /node_modules/
-/studio-ui/dist/
+/monitor-ui/
+/public/monitor/
 .env
 .env.backup
 composer.lock
